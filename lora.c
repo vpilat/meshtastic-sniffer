@@ -385,16 +385,32 @@ static void state_tick(lora_decoder_t *d)
                 d->state, sym, peak, peak / (noise > 0 ? noise : 1));
     }
 
+    /* Preamble-detection SNR floor. Without this, silence between frames
+     * has every FFT bin == 0, argmax returns bin 0, the "stable bin"
+     * counter ticks to PREAMBLE_MIN, and the state machine fakes a
+     * preamble lock on quiet samples -- which then mis-syncs onto the
+     * actual next frame. Real LoRa preambles have peak >> noise; a 6 dB
+     * margin is generous enough to ignore both noise floors and zero
+     * input. */
+    bool above_floor = (peak > 0.0f) && (peak > 2.0f * (noise > 0.0f ? noise : 1.0f));
+
     switch (d->state) {
     case STATE_IDLE: {
         /* First detection: latch the bin and start counting consecutive
          * symbols at the same bin (within 1-bin tolerance for CFO). */
+        if (!above_floor) break;
         d->preamble_bin   = (int)sym;
         d->preamble_count = 1;
         d->state          = STATE_PREAMBLE_OK;
         break;
     }
     case STATE_PREAMBLE_OK: {
+        if (!above_floor) {
+            /* Lost the signal -- back to hunting. */
+            d->state = STATE_IDLE;
+            d->preamble_count = 0;
+            break;
+        }
         int diff = abs((int)sym - d->preamble_bin);
         /* Account for FFT wrap-around. */
         if (diff > d->N / 2) diff = d->N - diff;
