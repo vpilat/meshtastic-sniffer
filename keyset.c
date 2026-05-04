@@ -180,6 +180,17 @@ int keyset_parse_spec(keyset_t *k, const char *spec)
 
     if (!strcasecmp(value, "default")) {
         make_simple_psk(1, psk); psk_len = 16;
+        /* Bare `default` (no `Channel=` prefix) registers the same PSK under
+         * every Meshtastic preset channel name, so a single --keys=default
+         * decrypts traffic on any preset without per-channel typing. */
+        if (!eq) {
+            int rc = 0;
+            for (int p = 0; p < MESH_PRESET_COUNT; ++p) {
+                if (keyset_add(k, MESH_PRESETS[p].channel_name, psk, 16) < 0)
+                    rc = -1;
+            }
+            return rc;
+        }
     } else if (!strcasecmp(value, "none") || !strcasecmp(value, "unencrypted")) {
         psk_len = 0;
     } else if (!strncasecmp(value, "simple", 6) && isdigit((unsigned char)value[6])) {
