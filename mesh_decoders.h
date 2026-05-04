@@ -79,10 +79,32 @@ typedef struct mesh_telemetry {
 } mesh_telemetry_t;
 bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out);
 
-/* ---- ROUTING_APP (port 5) -- subset: error_reason ---- */
+/* ---- ROUTING_APP (port 5) ----
+ *
+ * meshtastic.Routing { oneof variant {
+ *     RouteDiscovery route_request = 1;
+ *     RouteDiscovery route_reply   = 2;
+ *     Error          error_reason  = 3;
+ * }}
+ * RouteDiscovery contains repeated fixed32 route node IDs, optionally
+ * with per-hop SNRs in dB*4. We surface variant + the node-ID path so
+ * mesh-routing visibility is possible from header-only intel. */
+typedef enum {
+    MESH_ROUTING_NONE = 0,
+    MESH_ROUTING_REQUEST,
+    MESH_ROUTING_REPLY,
+    MESH_ROUTING_ERROR,
+} mesh_routing_kind_t;
+
 typedef struct mesh_routing {
-    bool     have_error;
+    mesh_routing_kind_t kind;
+    /* MESH_ROUTING_ERROR */
     uint32_t error_reason;
+    /* MESH_ROUTING_REQUEST / MESH_ROUTING_REPLY */
+    int      n_route;
+    uint32_t route[16];          /* forward path: source ... dest */
+    /* legacy: kept for source compat with feed.c that read these fields. */
+    bool     have_error;
 } mesh_routing_t;
 bool mesh_decode_routing(const uint8_t *buf, size_t len, mesh_routing_t *out);
 

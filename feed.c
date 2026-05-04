@@ -269,6 +269,38 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
             }
             break;
         }
+        case MESH_PORT_RANGE_TEST: {
+            /* Range test packets are plain UTF-8 text payloads (typically a
+             * monotonically incrementing "seq=N" sender stamp). Surface as
+             * the same `text` field as TEXT_MESSAGE_APP -- combined with
+             * rssi/snr/preset already in the line, that's everything an
+             * operator needs for a range-test log. */
+            char text[128];
+            size_t n = ev->payload_len < sizeof(text) - 1 ? ev->payload_len : sizeof(text) - 1;
+            memcpy(text, ev->payload, n); text[n] = 0;
+            jw_field_str(j, "text", text);
+            break;
+        }
+        case MESH_PORT_ROUTING: {
+            mesh_routing_t r;
+            if (mesh_decode_routing(ev->payload, ev->payload_len, &r)) {
+                static const char *kinds[] = {"none","request","reply","error"};
+                if (r.kind > 0 && r.kind < 4)
+                    jw_field_str(j, "routing_kind", kinds[r.kind]);
+                if (r.kind == MESH_ROUTING_ERROR)
+                    jw_field_u32(j, "error_reason", r.error_reason);
+                if (r.n_route > 0) {
+                    jw_open_array(j, "route");
+                    for (int i = 0; i < r.n_route; ++i) {
+                        jw_array_sep(j);
+                        char nid[16]; snprintf(nid, sizeof(nid), "!%08x", r.route[i]);
+                        jw_str_escaped(j, nid);
+                    }
+                    jw_close_array(j);
+                }
+            }
+            break;
+        }
         case MESH_PORT_TRACEROUTE: {
             mesh_traceroute_t tr;
             if (mesh_decode_traceroute(ev->payload, ev->payload_len, &tr)) {

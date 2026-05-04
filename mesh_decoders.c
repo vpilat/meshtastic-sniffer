@@ -206,6 +206,43 @@ bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out
     return any;
 }
 
+/* RouteDiscovery sub-message: repeated fixed32 route = 1. We pull the
+ * node-ID path; per-hop SNRs (fields 2/4) and reverse path (field 3)
+ * skipped for now. */
+static void parse_route_discovery(const uint8_t *buf, size_t len, mesh_routing_t *out)
+{
+    const uint8_t *p = buf, *end = buf + len;
+    while (p < end) {
+        uint32_t fld, wt;
+        if (!pb_read_tag(&p, end, &fld, &wt)) return;
+        if (fld == 1) {
+            /* Repeated fixed32 -- can be packed (length-delim block of fixed32s)
+             * or unpacked (one tag per element). Handle both. */
+            if (wt == 5) {
+                uint32_t f;
+                if (!pb_read_fixed32(&p, end, &f)) return;
+                if (out->n_route < (int)(sizeof(out->route)/sizeof(out->route[0])))
+                    out->route[out->n_route++] = f;
+            } else if (wt == 2) {
+                const uint8_t *bp; size_t blen;
+                if (!pb_read_length(&p, end, &bp, &blen)) return;
+                while (bp + 4 <= buf + len &&
+                       out->n_route < (int)(sizeof(out->route)/sizeof(out->route[0])) &&
+                       blen >= 4) {
+                    uint32_t f = (uint32_t)bp[0] | ((uint32_t)bp[1] << 8) |
+                                 ((uint32_t)bp[2] << 16) | ((uint32_t)bp[3] << 24);
+                    out->route[out->n_route++] = f;
+                    bp += 4; blen -= 4;
+                }
+            } else {
+                if (!pb_skip_value(&p, end, wt)) return;
+            }
+        } else {
+            if (!pb_skip_value(&p, end, wt)) return;
+        }
+    }
+}
+
 /* ---- ROUTING_APP -- meshtastic.Routing ---- */
 bool mesh_decode_routing(const uint8_t *buf, size_t len, mesh_routing_t *out)
 {
@@ -215,13 +252,22 @@ bool mesh_decode_routing(const uint8_t *buf, size_t len, mesh_routing_t *out)
     while (p < end) {
         uint32_t fld, wt;
         if (!pb_read_tag(&p, end, &fld, &wt)) return false;
+        const uint8_t *bp; size_t blen; uint64_t v;
         switch (fld) {
-        case 3: { uint64_t v; if (!pb_read_varint(&p, end, &v)) return false;
-                  out->error_reason = (uint32_t)v; out->have_error = true; break; }
+        case 1: if (!pb_read_length(&p, end, &bp, &blen)) return false;
+                out->kind = MESH_ROUTING_REQUEST;
+                parse_route_discovery(bp, blen, out); break;
+        case 2: if (!pb_read_length(&p, end, &bp, &blen)) return false;
+                out->kind = MESH_ROUTING_REPLY;
+                parse_route_discovery(bp, blen, out); break;
+        case 3: if (!pb_read_varint(&p, end, &v)) return false;
+                out->kind = MESH_ROUTING_ERROR;
+                out->error_reason = (uint32_t)v;
+                out->have_error = true; break;
         default: if (!pb_skip_value(&p, end, wt)) return false; break;
         }
     }
-    return out->have_error;
+    return out->kind != MESH_ROUTING_NONE;
 }
 
 /* ---- WAYPOINT_APP -- meshtastic.Waypoint ---- */
