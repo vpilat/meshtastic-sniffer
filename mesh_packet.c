@@ -239,10 +239,17 @@ int mesh_packet_decode_with_radio(const uint8_t *frame, size_t frame_len,
             }
         }
 
+        extern int verbose;
         for (int i = 0; bucket && bucket[i] >= 0 && i < 8; ++i) {
             const keyset_entry_t *e = keyset_get(keys, bucket[i]);
             if (!e) continue;
 
+            if (verbose >= 2) {
+                fprintf(stderr, "[mesh] decrypt attempt: from=!%08x ch=0x%02x "
+                        "vs key '%s' psk=%dB\n",
+                        ev.header.from, ev.header.channel,
+                        e->channel_name, e->psk_len);
+            }
             if (e->psk_len == 0) {
                 /* "none" -- treat ciphertext as plaintext directly */
                 memcpy(plaintext, cipher, use_len);

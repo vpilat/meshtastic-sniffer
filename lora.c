@@ -608,12 +608,14 @@ static void state_tick(lora_decoder_t *d)
         capture_preamble ? d->preamble_bin : -1,
         capture_preamble ? &preamble_bin_val : NULL);
 
-    /* Per-tick state-machine trace -- enable with MESHTASTIC_LORA_TRACE=1 in
-     * the env. Useful for cross-validating against gr-lora_sdr's RX. */
+    /* Per-tick state-machine trace. Enabled by either MESHTASTIC_LORA_TRACE=1
+     * in the env (legacy) or -vvv on the command line. Useful for cross-
+     * validating against the upstream RX. */
+    extern int verbose;
     static int trace_check = 0, trace_on = 0, trace_count = 0;
     if (!trace_check) {
         const char *e = getenv("MESHTASTIC_LORA_TRACE");
-        trace_on = (e && *e == '1');
+        trace_on = (e && *e == '1') || (verbose >= 3);
         trace_check = 1;
     }
     if (trace_on && trace_count++ < 2000) {

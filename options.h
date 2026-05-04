@@ -50,6 +50,10 @@ extern char         *opt_sdr_serial;
 extern uint64_t      opt_center_freq_hz;  /* user override; 0 = derive from region */
 extern uint32_t      opt_sample_rate;     /* user override; 0 = SDR max */
 extern int           opt_clock_src;       /* CLOCK_SRC_* from sdr.h */
+/* Log level: 0 = silent (warnings still go to stderr via warnx),
+ *            1 = -v   INFO  (config, channel adds, frame decodes),
+ *            2 = -vv  DEBUG (per-frame meta, decryption attempts),
+ *            3 = -vvv TRACE (per-symbol state machine). */
 extern int           verbose;
 extern bool          opt_force_simd_generic;
 extern op_mode_t     opt_op_mode;

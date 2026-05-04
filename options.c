@@ -157,7 +157,7 @@ void options_print_help(const char *prog)
         "  --simd-generic         force scalar SIMD (debug)\n"
         "  --selftest             run self-tests (channelizer + AES end-to-end)\n"
         "  --list                 enumerate all available SDR devices and exit\n"
-        "  -v, --verbose\n"
+        "  -v, --verbose          INFO+WARN diagnostics (-vv DEBUG, -vvv TRACE)\n"
         "  -h, --help\n",
         prog, EXTRA_FREQ_MAX, FEED_MAX);
 }
@@ -263,7 +263,7 @@ int options_parse(int argc, char **argv)
     while ((c = getopt_long(argc, argv, "hv", longopts, NULL)) != -1) {
         switch (c) {
         case 'h': options_print_help(argv[0]); return 1;
-        case 'v': verbose = 1; break;
+        case 'v': ++verbose; break;
 
         case O_HACKRF:  if (set_backend(SDR_BACKEND_HACKRF,  optarg) < 0) return 2; break;
         case O_BLADERF: if (set_backend(SDR_BACKEND_BLADERF, optarg) < 0) return 2; break;
