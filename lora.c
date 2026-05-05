@@ -461,14 +461,24 @@ static inline uint16_t demod_one_symbol(lora_decoder_t *d,
 /* Dechirp samples with the UPCHIRP reference (instead of downchirp) to demod
  * a downchirp symbol; returns argmax bin. Used during sync to derive the
  * CFO_int estimate per gr-lora_sdr frame_sync_impl.cc:607
- *     down_val = get_symbol_val(symb_corr, m_upchirp). */
+ *     symb_corr   = in_down * CFO_frac_correc
+ *     down_val    = get_symbol_val(symb_corr, m_upchirp)
+ * The cfo_frac_correc precondition is critical: without it, residual
+ * fractional CFO biases the integer-bin readout of down_val by up to
+ * ±1, which then mis-derives cfo_int. */
 static int demod_downchirp_argmax(lora_decoder_t *d, const float complex *s)
 {
     float complex *fft_in_c  = (float complex *)d->fft_in;
     float complex *fft_out_c = (float complex *)d->fft_out;
     float complex *up_c      = (float complex *)d->upchirp;
-    for (int n = 0; n < d->N; ++n)
-        fft_in_c[n] = s[n] * up_c[n];
+    double inv_N = 1.0 / (double)d->N;
+    /* Pre-correct cfo_frac (already estimated from preamble) on the input
+     * samples before dechirping. Equivalent to gr-lora's symb_corr step. */
+    for (int n = 0; n < d->N; ++n) {
+        double frac_phase = -2.0 * M_PI * (double)d->cfo_frac * (double)n * inv_N;
+        float complex frac_tw = (float complex)(cos(frac_phase) + I * sin(frac_phase));
+        fft_in_c[n] = s[n] * frac_tw * up_c[n];
+    }
     fftwf_execute(d->fft_plan);
     float best = 0.0f; int best_bin = 0;
     for (int k = 0; k < d->N; ++k) {
@@ -886,12 +896,15 @@ static void state_tick(lora_decoder_t *d)
                                     d->header_llrs[hi]);
             } else {
                 /* gr-lora_sdr fft_demod_impl.cc:313 + gray_mapping_impl.cc:70:
-                 *   raw       = (bin - 1) mod 2^sf
+                 *   raw       = (bin - 1) mod 2^sf      <-- TX gray_demap added +1
                  *   demod_out = raw / 4   (header / LDRO mode -- DE)
                  *   gray      = demod_out ^ (demod_out >> 1)
-                 * (preamble_bin is 0 after STO realignment / CFO compensation
-                 * has been applied to the downchirp reference.) */
-                int corr = ((int)sym - d->preamble_bin) % d->N;
+                 * The -1 cancels the TX gray_demap +1 offset so symbol
+                 * value 0 maps cleanly to bin 0 after dechirp+FFT. On
+                 * synthetic IQ the integer-divide by 4 quietly absorbs
+                 * the missing -1 most of the time, but on real radio
+                 * it shifts the header nibbles by 1 bin and CRC fails. */
+                int corr = ((int)sym - d->preamble_bin - 1) % d->N;
                 if (corr < 0) corr += d->N;
                 uint16_t demod_out = (uint16_t)(corr / 4);
                 uint16_t gray = (uint16_t)(demod_out ^ (demod_out >> 1));
