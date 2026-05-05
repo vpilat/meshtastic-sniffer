@@ -20,7 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHANNELIZER_MAX_CHANNELS 256
+#define CHANNELIZER_MAX_CHANNELS 1024
 #define CHANNELIZER_OUTBUF_SAMPLES 4096   /* batch size delivered to the callback */
 
 typedef void (*channelizer_cb_t)(int channel_id,

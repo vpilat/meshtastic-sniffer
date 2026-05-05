@@ -757,7 +757,13 @@ static void state_tick(lora_decoder_t *d)
         int diff = abs((int)sym - d->preamble_bin);
         /* Account for FFT wrap-around. */
         if (diff > d->N / 2) diff = d->N - diff;
-        if (diff <= 1) {
+        /* ±2 bin tolerance: with Hamming-window leakage and residual CFO,
+         * the preamble FFT peak can oscillate between three adjacent
+         * bins. A ±1 tolerance fires SHIFT spuriously on the wobble.
+         * The smallest sync-word offset we still need to detect cleanly
+         * is sync_word=1 -> bin = 8 (LoRa convention), so ±2 leaves
+         * margin without missing real syncs. */
+        if (diff <= 2) {
             /* Still on preamble. Cap count so we're ready to detect sync. */
             if (d->preamble_count < PREAMBLE_MIN + 4) d->preamble_count++;
             /* Snapshot the FFT bin value for cfo_frac estimation later. */

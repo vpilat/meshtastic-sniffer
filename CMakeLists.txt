@@ -106,6 +106,7 @@ set(SOURCES
     ${PROJECT_SOURCE_DIR}/file_src.c
     ${PROJECT_SOURCE_DIR}/vita49.c
     ${PROJECT_SOURCE_DIR}/channelizer.c
+    ${PROJECT_SOURCE_DIR}/pfb.c
     ${PROJECT_SOURCE_DIR}/lora.c
     ${PROJECT_SOURCE_DIR}/keyset.c
     ${PROJECT_SOURCE_DIR}/protobuf.c
