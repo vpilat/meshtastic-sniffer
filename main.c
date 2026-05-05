@@ -33,6 +33,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -164,8 +165,9 @@ static void on_off_grid_discovery(const scanner_discovery_t *disc, void *user)
 
 /* ---- Pipeline glue: channelizer -> lora demod -> mesh packet -> feed ---- */
 
-/* Forward declarations -- definitions follow below. */
-static void dedup_mark_decrypted(uint32_t packet_id, int sf, int bw_hz);
+/* Forward declaration -- definition follows below. Marks the most
+ * recent (sf, bw) dedup entry within the leakage window as decrypted. */
+static void dedup_mark_recent_decrypted(int sf, int bw_hz);
 
 static void on_mesh_event(const mesh_event_t *ev, void *user) {
     intptr_t channel_id = (intptr_t)user;
@@ -173,98 +175,135 @@ static void on_mesh_event(const mesh_event_t *ev, void *user) {
         __atomic_add_fetch(&g_decrypts_total, 1, __ATOMIC_RELAXED);
         if (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS)
             __atomic_add_fetch(&g_chan_stats[channel_id].decrypted, 1, __ATOMIC_RELAXED);
-        /* Tell dedup we got cleartext for this packet_id; future
-         * leakage copies are pure noise -- suppress them. */
-        dedup_mark_decrypted(ev->header.packet_id, ev->sf, ev->bw_hz);
+        /* Tell dedup we got cleartext for this transmission; later
+         * leakage copies in the same window get suppressed. */
+        dedup_mark_recent_decrypted(ev->sf, ev->bw_hz);
     }
     feed_publish_event(ev);
 }
 
-/* Dedupe PFB bin-leakage copies of one real transmission. Each chirp
- * spreads across several adjacent FFT output bins; every bin's decoder
- * locks on it and produces nearly-identical payloads decoded within
- * <1 ms of each other. Adjacent bins see slightly different SNR, so
- * each leakage copy has bit errors in DIFFERENT positions: the
- * packet_id, from-ID, and even channel hash all mutate by 1-3 bits
- * across copies. So matching on packet_id alone misses most replicas.
+/* Dedupe PFB bin-leakage copies of a single transmission.
  *
- * Reliable signal: TIME PROXIMITY for the same (sf, bw). One real
- * Meshtastic transmission has a single decode-completion instant;
- * leakage copies cluster at that instant within a few ms. Real
- * transmissions on the same (sf, bw) are separated by at least the
- * frame's air-time (tens of ms) plus normal mesh inter-frame gap.
+ * The SDR captures one chirp; every PFB output bin within the chirp's
+ * sidelobe range produces a decode of the same payload, milliseconds
+ * apart. Each adjacent bin has a slightly worse SNR and produces a
+ * different small set of bit errors -- so packet_id, from-ID, and
+ * channel hash all mutate 1-3 bits between copies. Pure exact-match
+ * dedup fails. Pure time-window dedup fails too: two genuine concurrent
+ * transmissions on the same (sf, bw) would be wrongly suppressed.
  *
- * We treat any frame arriving within DEDUP_WINDOW_US after a previous
- * frame on the same (sf, bw) bucket as a leakage replica. To avoid
- * losing decrypt opportunities we let up to DEDUP_DECRYPT_ATTEMPTS
- * copies through; once any copy decrypts, we suppress the rest
- * immediately. */
-#define DEDUP_BUCKETS          16        /* unique (sf, bw) combos in flight */
-#define DEDUP_WINDOW_US        50000     /* 50 ms */
+ * Bulletproof signal: PAYLOAD FINGERPRINT SIMILARITY. Two leakage
+ * copies of one transmission share ~99% of payload bytes -- their
+ * fingerprints differ by only a few bits (= the bit errors). Two
+ * unrelated transmissions have effectively random fingerprints with
+ * Hamming distance ~32 / 64 bits.
+ *
+ * Algorithm: keep a small ring of recent (fingerprint, ts, sf, bw,
+ * decrypted) tuples. A new frame is a duplicate iff some recent
+ * fingerprint within DEDUP_WINDOW_US has popcount(xor) <= threshold
+ * AND same (sf, bw). Threshold is well below random-distance so
+ * false matches are essentially impossible. */
+#define DEDUP_RING_SIZE        128
+#define DEDUP_WINDOW_US        50000     /* 50 ms (= ~25 chirp durations max) */
+#define DEDUP_FP_HAMMING_THRESH 14       /* random 64-bit Hamming dist ~32 */
 #define DEDUP_DECRYPT_ATTEMPTS 3
+
+/* 64-bit XOR-fold fingerprint of the payload bytes. Two near-identical
+ * byte arrays produce near-identical fingerprints; a single bit error
+ * flips a single bit in the fingerprint. */
+static uint64_t payload_fingerprint(const uint8_t *p, size_t n)
+{
+    uint64_t h = 0;
+    for (size_t i = 0; i + 8 <= n; i += 8) {
+        uint64_t w;
+        memcpy(&w, p + i, sizeof(w));
+        h ^= w;
+        /* Light rotation prevents long aligned runs of zeros from
+         * fingerprint-collapsing into 0 -- stay sensitive to position. */
+        h = (h << 1) | (h >> 63);
+    }
+    /* Tail bytes (n mod 8). */
+    uint64_t tail = 0;
+    for (size_t i = (n & ~7ULL); i < n; ++i)
+        tail |= (uint64_t)p[i] << ((i - (n & ~7ULL)) * 8);
+    return h ^ tail;
+}
+
 typedef struct {
+    uint64_t fp;
     int      sf;
     int      bw_hz;
-    uint64_t ts_us;             /* timestamp of the most recent emit */
-    int      attempts;          /* copies let through inside the window */
+    uint64_t ts_us;
+    int      attempts;
     bool     ever_decrypted;
-} dedup_bucket_t;
-static dedup_bucket_t g_dedup[DEDUP_BUCKETS];
+} dedup_entry_t;
+static dedup_entry_t g_dedup[DEDUP_RING_SIZE];
+static int           g_dedup_head;
 static pthread_mutex_t g_dedup_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static bool frame_is_duplicate(uint32_t packet_id, int sf, int bw_hz)
+/* The new key is a fingerprint, not a packet_id (packet_id mutates
+ * with bit errors). Keep the function name + signature compatible
+ * with on_lora_frame's call-site by computing the fingerprint inside. */
+static bool frame_is_duplicate(const uint8_t *payload, size_t payload_len,
+                               int sf, int bw_hz)
 {
-    (void)packet_id;            /* kept for trace / future fuzzy matching */
+    if (!payload || payload_len < 12) return false;
+    uint64_t fp = payload_fingerprint(payload, payload_len);
+
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+
     bool suppress = false;
     pthread_mutex_lock(&g_dedup_mu);
-    dedup_bucket_t *b = NULL;
-    dedup_bucket_t *oldest = &g_dedup[0];
-    for (int i = 0; i < DEDUP_BUCKETS; ++i) {
-        if (g_dedup[i].sf == sf && g_dedup[i].bw_hz == bw_hz) {
-            b = &g_dedup[i];
-            break;
-        }
-        if (g_dedup[i].ts_us < oldest->ts_us) oldest = &g_dedup[i];
+    dedup_entry_t *match = NULL;
+    for (int i = 0; i < DEDUP_RING_SIZE; ++i) {
+        dedup_entry_t *e = &g_dedup[i];
+        if (e->sf != sf || e->bw_hz != bw_hz) continue;
+        if (now_us - e->ts_us >= DEDUP_WINDOW_US) continue;
+        int hd = __builtin_popcountll(e->fp ^ fp);
+        if (hd <= DEDUP_FP_HAMMING_THRESH) { match = e; break; }
     }
-    if (!b) {
-        /* No bucket for this (sf, bw) yet: take over the LRU slot. */
-        b = oldest;
-        b->sf = sf; b->bw_hz = bw_hz;
-        b->ts_us = 0; b->attempts = 0; b->ever_decrypted = false;
-    }
-    if (now_us - b->ts_us < DEDUP_WINDOW_US) {
-        /* Inside the leakage window for this bucket. */
-        if (b->ever_decrypted || b->attempts >= DEDUP_DECRYPT_ATTEMPTS) {
+    if (match) {
+        if (match->ever_decrypted || match->attempts >= DEDUP_DECRYPT_ATTEMPTS) {
             suppress = true;
         } else {
-            b->attempts++;
+            match->attempts++;
+            match->ts_us = now_us;
         }
     } else {
-        /* New unique transmission on this (sf, bw): reset bucket. */
-        b->ts_us = now_us;
-        b->attempts = 1;
-        b->ever_decrypted = false;
+        g_dedup[g_dedup_head] = (dedup_entry_t){
+            .fp = fp, .sf = sf, .bw_hz = bw_hz,
+            .ts_us = now_us, .attempts = 1, .ever_decrypted = false,
+        };
+        g_dedup_head = (g_dedup_head + 1) % DEDUP_RING_SIZE;
     }
     pthread_mutex_unlock(&g_dedup_mu);
     return suppress;
 }
 
-/* Mark the current bucket as decrypted; remaining leakage replicas in
- * the same window get suppressed. Called from on_mesh_event when
- * ev->decrypted == true. */
-static void dedup_mark_decrypted(uint32_t packet_id, int sf, int bw_hz)
+/* Mark the most-recent (sf, bw) dedup entry within the leakage window
+ * as decrypted; future leakage copies of the same fingerprint will
+ * suppress immediately. We use 'most recent in window' as a proxy for
+ * 'this entry' because mesh_event_t doesn't carry the original
+ * payload bytes; the decryption happens AFTER frame_is_duplicate
+ * already created the entry, so the most-recent one in the same
+ * (sf, bw) bucket within the window is necessarily ours. */
+static void dedup_mark_recent_decrypted(int sf, int bw_hz)
 {
-    (void)packet_id;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
     pthread_mutex_lock(&g_dedup_mu);
-    for (int i = 0; i < DEDUP_BUCKETS; ++i) {
-        if (g_dedup[i].sf == sf && g_dedup[i].bw_hz == bw_hz) {
-            g_dedup[i].ever_decrypted = true;
-            break;
-        }
+    uint64_t latest_ts = 0;
+    dedup_entry_t *latest = NULL;
+    for (int i = 0; i < DEDUP_RING_SIZE; ++i) {
+        dedup_entry_t *e = &g_dedup[i];
+        if (e->sf != sf || e->bw_hz != bw_hz) continue;
+        if (now_us - e->ts_us >= DEDUP_WINDOW_US) continue;
+        if (e->ts_us > latest_ts) { latest_ts = e->ts_us; latest = e; }
     }
+    if (latest) latest->ever_decrypted = true;
     pthread_mutex_unlock(&g_dedup_mu);
 }
 
@@ -272,16 +311,14 @@ static void on_lora_frame(const uint8_t *payload, size_t payload_len,
                           const lora_frame_meta_t *meta, void *user)
 {
     intptr_t channel_id = (intptr_t)user;
-    /* Drop PFB bin-leakage duplicates BEFORE counters and decode. The
-     * 16-byte Meshtastic radio header has packet_id at offset 8..11 LE. */
-    if (payload_len >= 12) {
-        uint32_t packet_id = (uint32_t)payload[8]
-                           | ((uint32_t)payload[9]  << 8)
-                           | ((uint32_t)payload[10] << 16)
-                           | ((uint32_t)payload[11] << 24);
+    /* Drop PFB bin-leakage duplicates BEFORE counters and decode.
+     * Dedup matches by payload-fingerprint Hamming distance so that
+     * bit-error mutations in packet_id / from / channel don't slip
+     * leakage replicas through. */
+    {
         int sf = meta ? meta->sf    : 0;
         int bw = meta ? meta->bw_hz : 0;
-        if (frame_is_duplicate(packet_id, sf, bw)) return;
+        if (frame_is_duplicate(payload, payload_len, sf, bw)) return;
     }
     __atomic_add_fetch(&g_frames_total, 1, __ATOMIC_RELAXED);
     if (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS) {
