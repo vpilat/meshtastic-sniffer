@@ -89,7 +89,10 @@ static const char DASHBOARD_HTML[] =
 ".log-item{padding:4px 0;border-bottom:1px dotted #1e293b;font-size:11px;line-height:1.5;word-wrap:break-word}\n"
 ".log-item .ts{color:#64748b;font-size:10px;margin-right:6px}\n"
 ".log-item b{color:#38bdf8}\n"
-"#config{padding:18px;overflow:auto;max-width:820px}\n"
+/* Config tab is plain vertical-stacked content -- override the
+ * .tab.active{display:flex} that's right for Live/Spectrum. */
+"#config.tab.active{display:block}\n"
+"#config{padding:18px;overflow:auto;max-width:820px;width:100%}\n"
 "#config h3{margin:18px 0 6px 0;font-size:11px;color:#38bdf8;text-transform:uppercase;letter-spacing:1px;font-weight:600;border-bottom:1px solid #334155;padding-bottom:4px}\n"
 "#config h3:first-child{margin-top:0}\n"
 "#config textarea,#config input[type=text]{width:100%;box-sizing:border-box;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:3px;padding:7px 10px;font-family:'SF Mono',Consolas,monospace;font-size:12px}\n"
