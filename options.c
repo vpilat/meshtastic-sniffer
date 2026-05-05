@@ -299,6 +299,15 @@ int options_parse(int argc, char **argv)
             rtl_gain_tenths_db = (int)(g * 10.0);
             sdrplay_gain_val = (int)g;
             airspy_lin_gain = (int)g;
+            /* HackRF: VGA covers 0..62 dB in 2 dB steps; LNA covers 0..40
+             * in 8 dB steps. Map a single --gain knob across both, then
+             * enable the 14 dB front-end amp above ~70 dB total. */
+            if (g <= 0)        { hackrf_lna_gain = 0;  hackrf_vga_gain = 0;  hackrf_amp_enable = 0; }
+            else if (g <= 40)  { hackrf_lna_gain = 0;  hackrf_vga_gain = (int)g; hackrf_amp_enable = 0; }
+            else if (g <= 60)  { hackrf_lna_gain = ((int)((g-40)/8))*8;
+                                 hackrf_vga_gain = 40; hackrf_amp_enable = 0; }
+            else               { hackrf_lna_gain = 40; hackrf_vga_gain = 62;
+                                 hackrf_amp_enable = (g >= 70) ? 1 : 0; }
             break;
         }
         case O_BIAS:    bias_tee = 1; break;
