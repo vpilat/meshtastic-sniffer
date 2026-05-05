@@ -164,35 +164,48 @@ static void on_off_grid_discovery(const scanner_discovery_t *disc, void *user)
 
 /* ---- Pipeline glue: channelizer -> lora demod -> mesh packet -> feed ---- */
 
+/* Forward declarations -- definitions follow below. */
+static void dedup_mark_decrypted(uint32_t packet_id, int sf, int bw_hz);
+
 static void on_mesh_event(const mesh_event_t *ev, void *user) {
     intptr_t channel_id = (intptr_t)user;
     if (ev->decrypted) {
         __atomic_add_fetch(&g_decrypts_total, 1, __ATOMIC_RELAXED);
         if (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS)
             __atomic_add_fetch(&g_chan_stats[channel_id].decrypted, 1, __ATOMIC_RELAXED);
+        /* Tell dedup we got cleartext for this packet_id; future
+         * leakage copies are pure noise -- suppress them. */
+        dedup_mark_decrypted(ev->header.packet_id, ev->sf, ev->bw_hz);
     }
     feed_publish_event(ev);
 }
 
-/* Dedupe a frame by (packet_id, sf, bw). One real Meshtastic transmission
- * leaks across several adjacent PFB output bins -- each bin's decoder
- * locks on the same chirp and produces the same payload. Without this
- * filter, a single frame shows up 20-40 times in the JSON stream and
- * tears up the dashboard. We keep a small ring of recent (packet_id,
- * sf, bw, ts_us) tuples and drop anything matching within 500 ms.
+/* Dedupe PFB bin-leakage copies of one real transmission. Each chirp
+ * spreads across several adjacent FFT output bins; every bin's decoder
+ * locks on it and produces the same payload milliseconds apart. We
+ * track recent (packet_id, sf, bw) tuples in a ring buffer.
  *
- * The (sf, bw) part of the key keeps DIFFERENT presets that happen to
- * share a packet_id (collision is rare but possible across mesh
- * neighbours) from each shadowing the other. */
-#define DEDUP_RING_SIZE   256       /* sized for ~30 PFB-leakage copies of
-                                     *   each of ~8 in-flight unique frames
-                                     *   inside one 500 ms window. */
-#define DEDUP_WINDOW_US   500000    /* 500 ms */
+ * Two competing goals -- balance via a small retry budget:
+ *   - Keep duplicate emissions out of the JSON stream.
+ *   - Don't lose decrypt opportunities if the first leakage copy had
+ *     bit errors that broke its AES-CTR CRC.
+ *
+ * We let up to DEDUP_DECRYPT_ATTEMPTS copies of a same-key frame
+ * through the decode path. If any decrypts, dedup_mark_decrypted()
+ * suppresses all further copies (we have the cleartext). After the
+ * budget is exhausted with no decrypt, all further copies are
+ * suppressed too -- avoids the 30-copy spam for packets we don't
+ * have keys for. */
+#define DEDUP_RING_SIZE        256
+#define DEDUP_WINDOW_US        500000    /* 500 ms */
+#define DEDUP_DECRYPT_ATTEMPTS 3         /* try at most 3 leakage copies */
 typedef struct {
     uint32_t packet_id;
     int      sf;
     int      bw_hz;
     uint64_t ts_us;
+    int      attempts;          /* copies allowed through so far */
+    bool     ever_decrypted;
 } dedup_entry_t;
 static dedup_entry_t g_dedup[DEDUP_RING_SIZE];
 static int           g_dedup_head;
@@ -203,24 +216,48 @@ static bool frame_is_duplicate(uint32_t packet_id, int sf, int bw_hz)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-    bool dup = false;
+    bool suppress = false;
     pthread_mutex_lock(&g_dedup_mu);
+    dedup_entry_t *match = NULL;
     for (int i = 0; i < DEDUP_RING_SIZE; ++i) {
-        const dedup_entry_t *e = &g_dedup[i];
+        dedup_entry_t *e = &g_dedup[i];
         if (e->packet_id == packet_id && e->sf == sf && e->bw_hz == bw_hz &&
             now_us - e->ts_us < DEDUP_WINDOW_US) {
-            dup = true;
+            match = e;
             break;
         }
     }
-    if (!dup) {
+    if (match) {
+        if (match->ever_decrypted || match->attempts >= DEDUP_DECRYPT_ATTEMPTS) {
+            suppress = true;
+        } else {
+            match->attempts++;
+            match->ts_us = now_us;
+        }
+    } else {
         g_dedup[g_dedup_head] = (dedup_entry_t){
-            .packet_id = packet_id, .sf = sf, .bw_hz = bw_hz, .ts_us = now_us
+            .packet_id = packet_id, .sf = sf, .bw_hz = bw_hz,
+            .ts_us = now_us, .attempts = 1, .ever_decrypted = false,
         };
         g_dedup_head = (g_dedup_head + 1) % DEDUP_RING_SIZE;
     }
     pthread_mutex_unlock(&g_dedup_mu);
-    return dup;
+    return suppress;
+}
+
+/* Mark a packet_id as decrypted; future leakage copies are suppressed.
+ * Called from on_mesh_event when ev->decrypted == true. */
+static void dedup_mark_decrypted(uint32_t packet_id, int sf, int bw_hz)
+{
+    pthread_mutex_lock(&g_dedup_mu);
+    for (int i = 0; i < DEDUP_RING_SIZE; ++i) {
+        dedup_entry_t *e = &g_dedup[i];
+        if (e->packet_id == packet_id && e->sf == sf && e->bw_hz == bw_hz) {
+            e->ever_decrypted = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_dedup_mu);
 }
 
 static void on_lora_frame(const uint8_t *payload, size_t payload_len,
