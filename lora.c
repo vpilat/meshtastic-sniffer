@@ -1,11 +1,18 @@
 /*
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (c) 2026 CEMAXECUTER LLC
+ *
+ * Significant portions of the bit-level decode (hard-decode Hamming,
+ * deinterleave, gray, dewhiten, preamble-mode-vote) are ported from
+ * gr-lora_sdr by Joachim Tapparel @ EPFL TCL Lab,
+ * https://github.com/tapparelj/gr-lora_sdr (GPL-3.0-or-later).
+ * Per-stage citations appear inline at the relevant call sites. CSS
+ * demodulation, frame state machine, FFT / CFO handling and integration
+ * with the polyphase channelizer are original to this project.
+ *
  * meshtastic-sniffer: LoRa CSS demodulator.
  *
- * Stage-by-stage implementation. The pure-algorithm stages (gray,
- * hamming, dewhiten, crc, deinterleave) are implemented from the LoRa
- * spec; they are tested standalone via lora_*() helpers in lora.h.
- *
- * The DSP path is:
+ * Stage-by-stage implementation. The DSP path is:
  *   accumulate N=2^SF samples per symbol
  *     -> dechirp (multiply by reference downchirp)
  *     -> N-point FFT (FFTW3f)
@@ -16,9 +23,6 @@
  *   HEADER : 8 symbols -> Hamming(8,4) -> length, CR, has_CRC
  *   PAYLOAD: cw_per_block symbols -> deinterleave -> Hamming(cr) -> bytes
  *   DELIVER: dewhiten, CRC check, frame callback
- *
- * Copyright (c) 2026 CEMAXECUTER LLC
- * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include "lora.h"

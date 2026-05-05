@@ -1,8 +1,12 @@
 /*
- * meshtastic-sniffer: protocol constant tables + tiny helpers.
- *
- * Copyright (c) 2026 CEMAXECUTER LLC
  * SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (c) 2026 CEMAXECUTER LLC
+ *
+ * The protocol constants in this file (default PSK bytes, preset SF/CR/BW
+ * tables, port-number assignments, region/band edges) come from the upstream
+ * Meshtastic firmware at https://github.com/meshtastic/firmware (GPL-3.0-or-later).
+ *
+ * meshtastic-sniffer: protocol constant tables + tiny helpers.
  */
 
 #include "meshtastic.h"

@@ -1,8 +1,13 @@
 /*
- * meshtastic-sniffer: multi-key dispatch.
- *
- * Copyright (c) 2026 CEMAXECUTER LLC
  * SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (c) 2026 CEMAXECUTER LLC
+ *
+ * The 1-byte channel-hash dispatch (xorHash(name) XOR xorHash(psk)) and
+ * the simpleN PSK derivation match the upstream Meshtastic firmware at
+ * https://github.com/meshtastic/firmware (GPL-3.0-or-later). The
+ * read-write keyset, bucket dispatcher and parsers are original.
+ *
+ * meshtastic-sniffer: multi-key dispatch.
  */
 
 #include "keyset.h"

@@ -1,4 +1,13 @@
 /*
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (c) 2026 CEMAXECUTER LLC
+ *
+ * The wire format and AES-CTR nonce layout described below are the
+ * Meshtastic over-the-air protocol, derived from the upstream firmware
+ * at https://github.com/meshtastic/firmware (GPL-3.0-or-later). All
+ * implementation here is original; only the on-the-air constants come
+ * from the firmware.
+ *
  * meshtastic-sniffer: packet decoder.
  *
  * Wire format of a Meshtastic LoRa frame (after CSS demod and CRC pass):
