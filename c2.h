@@ -39,4 +39,14 @@ void c2_share_url       (const char *body, c2_response_t *out);
 void c2_extra_freq      (const char *body, c2_response_t *out);
 void c2_cot_multicast   (const char *body, c2_response_t *out);
 
+/* Name-based dispatch used by transports that carry the command in an
+ * envelope (DEALER socket, future RPC). Supported commands map to the
+ * c2_* handlers above:
+ *   "keys_add" -> c2_keys_add
+ *   "share_url" -> c2_share_url
+ *   "extra_freq" -> c2_extra_freq
+ *   "cot_multicast" -> c2_cot_multicast
+ * Unknown command names produce a 404 response. */
+void c2_dispatch(const char *cmd, const char *body, c2_response_t *out);
+
 #endif /* C2_H */

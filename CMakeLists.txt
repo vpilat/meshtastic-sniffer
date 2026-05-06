@@ -113,9 +113,14 @@ set(SOURCES
     ${PROJECT_SOURCE_DIR}/mesh_packet.c
     ${PROJECT_SOURCE_DIR}/mesh_decoders.c
     ${PROJECT_SOURCE_DIR}/feed.c
+    ${PROJECT_SOURCE_DIR}/announce.c
     ${PROJECT_SOURCE_DIR}/gpsd.c
+    ${PROJECT_SOURCE_DIR}/archive.c
     ${PROJECT_SOURCE_DIR}/c2.c
+    ${PROJECT_SOURCE_DIR}/c2_dealer.c
+    ${PROJECT_SOURCE_DIR}/geofence.c
     ${PROJECT_SOURCE_DIR}/pcap_out.c
+    ${PROJECT_SOURCE_DIR}/psk_dict.c
     ${PROJECT_SOURCE_DIR}/schema.c
     ${PROJECT_SOURCE_DIR}/scanner.c
     ${PROJECT_SOURCE_DIR}/web.c
@@ -149,6 +154,7 @@ target_link_libraries(meshtastic-sniffer PRIVATE
     Threads::Threads
     ${FFTW3F_LIB}
     ${OPENSSL_CRYPTO_LIBRARY}
+    z   # zlib for archive.c gzipped JSONL
     m)
 
 if(FFTW3F_THREADS_LIB)

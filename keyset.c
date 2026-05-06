@@ -151,6 +151,39 @@ int keyset_add(keyset_t *k, const char *channel_name,
     return 0;
 }
 
+int keyset_add_raw(keyset_t *k, uint8_t channel_hash,
+                   const uint8_t *psk, size_t psk_len,
+                   const char *display_name)
+{
+    if (!k) return -1;
+    if (psk_len != 0 && psk_len != 16 && psk_len != 32) return -1;
+    if (psk_len > KEYSET_MAX_PSK_BYTES) return -1;
+
+    pthread_rwlock_wrlock(&k->lock);
+    if (k->n_entries >= KEYSET_MAX_ENTRIES) {
+        pthread_rwlock_unlock(&k->lock);
+        return -1;
+    }
+    keyset_entry_t *e = &k->entries[k->n_entries];
+    memset(e, 0, sizeof(*e));
+    if (display_name && *display_name)
+        strncpy(e->channel_name, display_name, KEYSET_MAX_NAME - 1);
+    else
+        strncpy(e->channel_name, "(discovered)", KEYSET_MAX_NAME - 1);
+    if (psk && psk_len) memcpy(e->psk, psk, psk_len);
+    e->psk_len = psk_len;
+    e->channel_hash = channel_hash;
+
+    int idx = k->n_entries++;
+    if (bucket_push(k, channel_hash, (int8_t)idx) < 0) {
+        --k->n_entries;
+        pthread_rwlock_unlock(&k->lock);
+        return -1;
+    }
+    pthread_rwlock_unlock(&k->lock);
+    return 0;
+}
+
 /* simpleN keys: bytes [d4..f0..bc..ff..ab..cf..4e..69..N] -- last byte is N. */
 static void make_simple_psk(int n, uint8_t out[16])
 {

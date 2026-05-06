@@ -38,6 +38,32 @@ void zmq_pub_init(void)
     int linger = 0;
     zmq_setsockopt(g_sock, ZMQ_LINGER, &linger, sizeof(linger));
 
+    /* Optional CurveZMQ on the wire. The secret-key file is the Z85
+     * sensor secret; PATH.pub is the matching public key. We act as
+     * server (ZMQ_CURVE_SERVER=1) since fusion-side SUB connects to us
+     * and authenticates with our public key as ServerKey. */
+    if (opt_zmq_curve_secret) {
+        FILE *f = fopen(opt_zmq_curve_secret, "r");
+        char sec[64] = {0};
+        if (f) {
+            size_t n = fread(sec, 1, sizeof(sec) - 1, f);
+            fclose(f);
+            /* Trim trailing whitespace from the Z85 line. */
+            while (n > 0 && (sec[n-1] == '\n' || sec[n-1] == '\r' || sec[n-1] == ' ')) sec[--n] = 0;
+        }
+        if (sec[0]) {
+            int curve_server = 1;
+            zmq_setsockopt(g_sock, ZMQ_CURVE_SERVER, &curve_server, sizeof(curve_server));
+            if (zmq_setsockopt(g_sock, ZMQ_CURVE_SECRETKEY, sec, strlen(sec)) != 0) {
+                fprintf(stderr, "zmq: CURVE_SECRETKEY rejected: %s\n", zmq_strerror(zmq_errno()));
+            } else {
+                fprintf(stderr, "zmq: CurveZMQ server enabled (secret loaded from %s)\n", opt_zmq_curve_secret);
+            }
+        } else {
+            fprintf(stderr, "zmq: failed to read curve secret from %s\n", opt_zmq_curve_secret);
+        }
+    }
+
     /* Endpoints with a wildcard host bind; everything else connects. */
     int rc = (strstr(opt_zmq_endpoint, "://*") || strstr(opt_zmq_endpoint, "*:"))
         ? zmq_bind(g_sock, opt_zmq_endpoint)

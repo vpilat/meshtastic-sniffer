@@ -121,3 +121,16 @@ void c2_cot_multicast(const char *body, c2_response_t *out)
     }
     respond(out, 200, "{\"enabled\":true,\"host\":\"%s\",\"port\":%d}", host, port);
 }
+
+void c2_dispatch(const char *cmd, const char *body, c2_response_t *out)
+{
+    if (!cmd) {
+        respond(out, 400, "{\"error\":\"no cmd\"}");
+        return;
+    }
+    if      (!strcmp(cmd, "keys_add"))      c2_keys_add(body, out);
+    else if (!strcmp(cmd, "share_url"))     c2_share_url(body, out);
+    else if (!strcmp(cmd, "extra_freq"))    c2_extra_freq(body, out);
+    else if (!strcmp(cmd, "cot_multicast")) c2_cot_multicast(body, out);
+    else respond(out, 404, "{\"error\":\"unknown cmd\"}");
+}

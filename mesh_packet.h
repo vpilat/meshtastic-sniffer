@@ -46,6 +46,14 @@ typedef struct mesh_event {
     int            bw_hz;
     char           preset_name[24]; /* "LongFast" / "LongSlow" / ... or "" */
 
+    /* Decoder slot index (0..CHANNELIZER_MAX_CHANNELS-1) -- which of the
+     * many parallel demodulator slots caught this frame. Lets operators
+     * map a JSON event back to the specific (frequency, BW, SF, CR) tuple
+     * the decoder was tuned to, independent of the in-protocol channel
+     * hash byte. -1 when the frame didn't come from a tuned LoRa slot
+     * (synthetic test events, etc.). */
+    int            slot_id;
+
     /* Inner Data envelope (when decrypted == true) */
     uint32_t       portnum;
     const uint8_t *payload;

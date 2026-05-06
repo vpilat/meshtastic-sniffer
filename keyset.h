@@ -51,6 +51,17 @@ void      keyset_destroy(keyset_t *k);
 int keyset_add(keyset_t *k, const char *channel_name,
                const uint8_t *psk, size_t psk_len);
 
+/* Add an entry under an explicitly-supplied channel hash byte rather
+ * than deriving it from xorHash(name) ^ xorHash(psk). Used by the PSK
+ * dictionary attack: when a candidate PSK is found to decrypt frames
+ * on an observed channel hash, register it under that exact hash so
+ * the bucket lookup routes future packets to it -- regardless of what
+ * the underlying channel's name was. `display_name` is for reporting
+ * / logging only (stored as channel_name on the entry). 0 on success. */
+int keyset_add_raw(keyset_t *k, uint8_t channel_hash,
+                   const uint8_t *psk, size_t psk_len,
+                   const char *display_name);
+
 /* Parse one CLI/env-var spec (a single entry, no commas):
  *   "ChannelName=SPEC" or "SPEC"
  * where SPEC is "default", "simple0".."simple10", "hex:HHHH...",

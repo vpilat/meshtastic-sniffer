@@ -14,9 +14,14 @@
  */
 
 #include "channelizer.h"
+#include "announce.h"
+#include "archive.h"
+#include "c2_dealer.h"
 #include "feed.h"
+#include "geofence.h"
 #include "gpsd.h"
 #include "pcap_out.h"
+#include "psk_dict.h"
 #include "schema.h"
 #include "fftw_lock.h"
 #include "file_src.h"
@@ -242,8 +247,14 @@ static void on_mesh_event(const mesh_event_t *ev, void *user) {
         if (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS)
             __atomic_add_fetch(&g_chan_stats[channel_id].decrypted, 1, __ATOMIC_RELAXED);
     }
-    replay_check(ev);
-    feed_publish_event(ev);
+    /* Inject the decoder slot id into the event so the JSON serializer
+     * can surface it. The slot id comes via the lora_decoder_t's user
+     * pointer (set in build_channel_set with the slot's index). */
+    mesh_event_t with_slot = *ev;
+    with_slot.slot_id = (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS)
+                        ? (int)channel_id : -1;
+    replay_check(&with_slot);
+    feed_publish_event(&with_slot);
 }
 
 /* Delayed best-pick dedup of PFB bin-leakage copies.
@@ -1248,12 +1259,29 @@ static int run_live(void)
     feed_init();
     if (opt_pcap_path) pcap_out_init(opt_pcap_path, false);
     else if (opt_pcap_fifo) pcap_out_init(opt_pcap_fifo, true);
+    if (opt_archive_dir) archive_init(opt_archive_dir);
+    if (opt_geofence_file) geofence_init(opt_geofence_file);
+    if (opt_psk_wordlist) {
+        if (psk_dict_init(opt_psk_wordlist))
+            fprintf(stderr, "psk-dict: dictionary attack active "
+                            "against undecrypted frames\n");
+        else
+            fprintf(stderr, "psk-dict: failed to start; check the wordlist file\n");
+    }
     if (opt_gpsd_endpoint) {
         if (gpsd_init(opt_gpsd_endpoint))
             fprintf(stderr, "gpsd: tagging events with station_lat/_lon/_alt_m from %s\n",
                     opt_gpsd_endpoint);
         else
             fprintf(stderr, "gpsd: failed to start client thread; events won't be tagged\n");
+    }
+    if (opt_announce_to) {
+        if (!announce_init(opt_announce_to))
+            fprintf(stderr, "announce: failed to start (bad URL?); fusion will not auto-discover this sensor\n");
+    }
+    if (opt_c2_dealer) {
+        if (!c2_dealer_init(opt_c2_dealer))
+            fprintf(stderr, "c2-dealer: failed to start; HTTP /api/* still available\n");
     }
     if (opt_web_port > 0) {
         web_init(opt_web_port);
@@ -1304,7 +1332,12 @@ static int run_live(void)
     web_shutdown();
     feed_shutdown();
     gpsd_shutdown();
+    announce_shutdown();
+    c2_dealer_shutdown();
     pcap_out_shutdown();
+    psk_dict_shutdown();
+    archive_shutdown();
+    geofence_shutdown();
     for (int i = 0; i < CHANNELIZER_MAX_CHANNELS; ++i) {
         if (g_demods[i]) { lora_decoder_destroy(g_demods[i]); g_demods[i] = NULL; }
     }
@@ -1346,6 +1379,32 @@ int main(int argc, char **argv)
     if (opt_print_schema) {
         schema_print();
         return 0;
+    }
+
+    if (opt_zmq_curve_keygen) {
+#ifdef HAVE_ZMQ
+        extern int zmq_curve_keypair(char *z85_public_key, char *z85_secret_key);
+        char pub[41] = {0}, sec[41] = {0};
+        if (zmq_curve_keypair(pub, sec) != 0) {
+            fprintf(stderr, "zmq-curve-keygen: zmq_curve_keypair failed\n");
+            return 1;
+        }
+        FILE *fs = fopen(opt_zmq_curve_keygen, "w");
+        if (!fs) { perror(opt_zmq_curve_keygen); return 1; }
+        fprintf(fs, "%s\n", sec); fclose(fs);
+        char pubpath[1024];
+        snprintf(pubpath, sizeof(pubpath), "%s.pub", opt_zmq_curve_keygen);
+        FILE *fp = fopen(pubpath, "w");
+        if (!fp) { perror(pubpath); return 1; }
+        fprintf(fp, "%s\n", pub); fclose(fp);
+        fprintf(stderr, "wrote secret to %s and public to %s\n",
+                opt_zmq_curve_keygen, pubpath);
+        fprintf(stderr, "fusion side: register this sensor with curve_pub=\"%s\"\n", pub);
+        return 0;
+#else
+        fprintf(stderr, "zmq-curve-keygen: built without libzmq\n");
+        return 1;
+#endif
     }
 
     if (opt_list_devices) {

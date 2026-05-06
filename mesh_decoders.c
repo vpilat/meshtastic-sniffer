@@ -627,3 +627,178 @@ bool mesh_decode_traceroute(const uint8_t *buf, size_t len, mesh_traceroute_t *o
     }
     return out->route_len > 0 || out->route_back_len > 0;
 }
+
+/* ---- REMOTE_HARDWARE_APP -- meshtastic.HardwareMessage ----
+ *
+ * Fields:
+ *   1 type           (varint, enum)
+ *   2 gpio_mask      (varint uint64)
+ *   3 gpio_value     (varint uint64)
+ *   4 txid           (varint uint32)
+ */
+bool mesh_decode_remote_hw(const uint8_t *buf, size_t len, mesh_remote_hw_t *out)
+{
+    if (!buf || !out) return false;
+    memset(out, 0, sizeof(*out));
+    const uint8_t *p = buf, *end = buf + len;
+    while (p < end) {
+        uint32_t fld, wt;
+        if (!pb_read_tag(&p, end, &fld, &wt)) return false;
+        uint64_t v;
+        switch (fld) {
+        case 1: if (!pb_read_varint(&p, end, &v)) return false; out->type = (uint32_t)v; break;
+        case 2: if (!pb_read_varint(&p, end, &v)) return false; out->gpio_mask = v; break;
+        case 3: if (!pb_read_varint(&p, end, &v)) return false; out->gpio_value = v; break;
+        case 4: if (!pb_read_varint(&p, end, &v)) return false; out->txid = (uint32_t)v; break;
+        default: if (!pb_skip_value(&p, end, wt)) return false; break;
+        }
+    }
+    return true;
+}
+
+/* ---- DETECTION_SENSOR_APP ----
+ *
+ * Plain UTF-8 bytes describing the detection event ("Detection event",
+ * etc). No protobuf wrapper; the on-the-wire payload IS the text. */
+bool mesh_decode_detection(const uint8_t *buf, size_t len, mesh_detection_t *out)
+{
+    if (!buf || !out) return false;
+    memset(out, 0, sizeof(*out));
+    size_t n = len < sizeof(out->text) - 1 ? len : sizeof(out->text) - 1;
+    memcpy(out->text, buf, n);
+    out->text[n] = 0;
+    return n > 0;
+}
+
+/* ---- STORE_FORWARD_APP -- meshtastic.StoreAndForward ----
+ *
+ * Wire layout:
+ *   1 rr        (varint, RequestResponse enum)
+ *   2 stats     (Statistics submessage)
+ *   3 history   (History submessage)
+ *   4 heartbeat (Heartbeat submessage)
+ *   5 text      (bytes)
+ *   6 empty     (bool)
+ *
+ * Statistics fields we surface:
+ *   1 messages_total, 2 messages_history (saved), 3 messages_max,
+ *   4 up_time, 5 requests
+ * History fields we surface:
+ *   1 history_messages, 2 window (seconds)
+ *
+ * Other Statistics/History fields are skipped (client-state fields the
+ * observer cannot act on without joining the mesh).
+ */
+static bool sf_decode_stats(const uint8_t *p, const uint8_t *end, mesh_storeforward_t *out)
+{
+    while (p < end) {
+        uint32_t fld, wt;
+        if (!pb_read_tag(&p, end, &fld, &wt)) return false;
+        uint64_t v;
+        switch (fld) {
+        case 1: if (!pb_read_varint(&p, end, &v)) return false; out->stats_total    = (uint32_t)v; break;
+        case 2: if (!pb_read_varint(&p, end, &v)) return false; out->stats_history  = (uint32_t)v; break;
+        case 3: if (!pb_read_varint(&p, end, &v)) return false; out->stats_max      = (uint32_t)v; break;
+        case 4: if (!pb_read_varint(&p, end, &v)) return false; out->stats_up_time_s= (uint32_t)v; break;
+        case 5: if (!pb_read_varint(&p, end, &v)) return false; out->stats_requests = (uint32_t)v; break;
+        default: if (!pb_skip_value(&p, end, wt)) return false; break;
+        }
+    }
+    return true;
+}
+
+static bool sf_decode_history(const uint8_t *p, const uint8_t *end, mesh_storeforward_t *out)
+{
+    while (p < end) {
+        uint32_t fld, wt;
+        if (!pb_read_tag(&p, end, &fld, &wt)) return false;
+        uint64_t v;
+        switch (fld) {
+        case 1: if (!pb_read_varint(&p, end, &v)) return false; out->hist_count    = (uint32_t)v; break;
+        case 2: if (!pb_read_varint(&p, end, &v)) return false; out->hist_window_s = (uint32_t)v; break;
+        default: if (!pb_skip_value(&p, end, wt)) return false; break;
+        }
+    }
+    return true;
+}
+
+bool mesh_decode_storeforward(const uint8_t *buf, size_t len, mesh_storeforward_t *out)
+{
+    if (!buf || !out) return false;
+    memset(out, 0, sizeof(*out));
+    const uint8_t *p = buf, *end = buf + len;
+    while (p < end) {
+        uint32_t fld, wt;
+        if (!pb_read_tag(&p, end, &fld, &wt)) return false;
+        uint64_t v;
+        if (fld == 1) {
+            if (!pb_read_varint(&p, end, &v)) return false;
+            out->rr = (uint32_t)v;
+        } else if (fld == 2 && wt == 2) {
+            uint64_t sublen;
+            if (!pb_read_varint(&p, end, &sublen)) return false;
+            if ((size_t)(end - p) < sublen) return false;
+            if (sf_decode_stats(p, p + sublen, out)) out->have_stats = true;
+            p += sublen;
+        } else if (fld == 3 && wt == 2) {
+            uint64_t sublen;
+            if (!pb_read_varint(&p, end, &sublen)) return false;
+            if ((size_t)(end - p) < sublen) return false;
+            if (sf_decode_history(p, p + sublen, out)) out->have_history = true;
+            p += sublen;
+        } else {
+            if (!pb_skip_value(&p, end, wt)) return false;
+        }
+    }
+    return true;
+}
+
+const char *mesh_storeforward_rr_name(uint32_t rr)
+{
+    switch (rr) {
+    case 0:   return "UNSET";
+    case 1:   return "ROUTER_ERROR";
+    case 2:   return "ROUTER_HEARTBEAT";
+    case 3:   return "ROUTER_PING";
+    case 4:   return "ROUTER_PONG";
+    case 5:   return "ROUTER_BUSY";
+    case 6:   return "ROUTER_HISTORY";
+    case 7:   return "ROUTER_STATS";
+    case 8:   return "ROUTER_TEXT_BROADCAST";
+    case 9:   return "ROUTER_TEXT_DIRECT";
+    case 64:  return "CLIENT_ERROR";
+    case 65:  return "CLIENT_HISTORY";
+    case 66:  return "CLIENT_STATS";
+    case 67:  return "CLIENT_PING";
+    case 68:  return "CLIENT_PONG";
+    case 69:  return "CLIENT_TEXT";
+    case 106: return "CLIENT_ABORT";
+    default:  return NULL;
+    }
+}
+
+/* ---- PAXCOUNTER_APP -- meshtastic.Paxcount ----
+ *
+ * Fields:
+ *   1 wifi    (varint)
+ *   2 ble     (varint)
+ *   3 uptime  (varint, seconds)
+ */
+bool mesh_decode_paxcounter(const uint8_t *buf, size_t len, mesh_paxcounter_t *out)
+{
+    if (!buf || !out) return false;
+    memset(out, 0, sizeof(*out));
+    const uint8_t *p = buf, *end = buf + len;
+    while (p < end) {
+        uint32_t fld, wt;
+        if (!pb_read_tag(&p, end, &fld, &wt)) return false;
+        uint64_t v;
+        switch (fld) {
+        case 1: if (!pb_read_varint(&p, end, &v)) return false; out->wifi = (uint32_t)v; break;
+        case 2: if (!pb_read_varint(&p, end, &v)) return false; out->ble = (uint32_t)v; break;
+        case 3: if (!pb_read_varint(&p, end, &v)) return false; out->uptime_s = (uint32_t)v; break;
+        default: if (!pb_skip_value(&p, end, wt)) return false; break;
+        }
+    }
+    return true;
+}

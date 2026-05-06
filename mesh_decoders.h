@@ -235,4 +235,64 @@ typedef struct mesh_traceroute {
 } mesh_traceroute_t;
 bool mesh_decode_traceroute(const uint8_t *buf, size_t len, mesh_traceroute_t *out);
 
+/* ---- REMOTE_HARDWARE_APP (port 2) ----
+ *
+ * HardwareMessage: { type enum, gpio_mask uint64, gpio_value uint64,
+ * txid uint32 }. Surfaced fields let an observer see a remote-GPIO
+ * RPC happening (read/write/notify) without making policy on it. */
+typedef struct mesh_remote_hw {
+    uint32_t type;       /* HardwareMessage.Type enum */
+    uint64_t gpio_mask;
+    uint64_t gpio_value;
+    uint32_t txid;
+} mesh_remote_hw_t;
+bool mesh_decode_remote_hw(const uint8_t *buf, size_t len, mesh_remote_hw_t *out);
+
+/* ---- DETECTION_SENSOR_APP (port 10) ----
+ *
+ * DetectionSensor's payload is a short text string ("Detection event",
+ * etc.) sent broadcast when a sensor-mode device sees its trigger.
+ * Surface as plain text. */
+typedef struct mesh_detection {
+    char text[128];
+} mesh_detection_t;
+bool mesh_decode_detection(const uint8_t *buf, size_t len, mesh_detection_t *out);
+
+/* ---- STORE_FORWARD_APP (port 65) ----
+ *
+ * StoreAndForward { rr enum, oneof variant {
+ *     Statistics stats; History history; Heartbeat heartbeat;
+ *     bytes text; bool empty;
+ * }}.
+ *
+ * We surface the rr (request/response) field plus, when the variant
+ * is Statistics or History, the headline counters. Lets observers
+ * see store-forward routers heartbeat and clients pull history
+ * without having to attach a Meshtastic client. */
+typedef struct mesh_storeforward {
+    uint32_t rr;                /* RequestResponse enum value */
+    bool     have_stats;
+    uint32_t stats_total;       /* messages_total */
+    uint32_t stats_history;     /* messages_history (stored) */
+    uint32_t stats_max;         /* messages_max (capacity) */
+    uint32_t stats_up_time_s;
+    uint32_t stats_requests;
+    bool     have_history;
+    uint32_t hist_count;        /* history_messages */
+    uint32_t hist_window_s;     /* window in seconds covered by the request */
+} mesh_storeforward_t;
+bool mesh_decode_storeforward(const uint8_t *buf, size_t len, mesh_storeforward_t *out);
+const char *mesh_storeforward_rr_name(uint32_t rr);
+
+/* ---- PAXCOUNTER_APP (port 9) ----
+ *
+ * Paxcount: { wifi uint32, ble uint32, uptime uint32 }. Crowd-density
+ * counter -- WiFi + BLE devices the sensor has seen in its window. */
+typedef struct mesh_paxcounter {
+    uint32_t wifi;
+    uint32_t ble;
+    uint32_t uptime_s;
+} mesh_paxcounter_t;
+bool mesh_decode_paxcounter(const uint8_t *buf, size_t len, mesh_paxcounter_t *out);
+
 #endif

@@ -7,7 +7,9 @@
  */
 
 #include "cot.h"
+#include "archive.h"
 #include "feed.h"
+#include "geofence.h"
 #include "gpsd.h"
 #include "mesh_decoders.h"
 #include "meshtastic.h"
@@ -160,10 +162,12 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
     snprintf(id_buf, sizeof(id_buf), "!%08x", ev->header.to);
     jw_field_str(j, "to",         id_buf);
 
-    jw_field_u32(j, "packet_id",  ev->header.packet_id);
-    jw_field_u32(j, "channel",    ev->header.channel);
-    jw_field_u32(j, "hop_limit",  (uint32_t)ev->hop_limit);
-    jw_field_u32(j, "hop_start",  (uint32_t)ev->hop_start);
+    jw_field_u32(j, "packet_id",     ev->header.packet_id);
+    jw_field_u32(j, "channel_hash",  ev->header.channel);  /* 1-byte routing hash from radio header */
+    if (ev->slot_id >= 0)
+        jw_field_u32(j, "slot_id",   (uint32_t)ev->slot_id); /* which decoder slot caught this */
+    jw_field_u32(j, "hop_limit",     (uint32_t)ev->hop_limit);
+    jw_field_u32(j, "hop_start",     (uint32_t)ev->hop_start);
     /* Upper byte of the relayer's node id; topology view can resolve
      * this to a known node when one is present in the keyset. */
     if (ev->header.relay_node)
@@ -208,6 +212,10 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
                 if (p.ground_track) jw_field_u32(j, "track_deg", p.ground_track);
                 /* CoT republish for any positioned node, named via node_db cache. */
                 cot_publish_position(ev, &p);
+                /* Geofence transitions: ENTRY / EXIT events when this
+                 * node crosses any configured polygon boundary. */
+                if (p.have_lat && p.have_lon)
+                    geofence_check(ev->header.from, p.lat_deg, p.lon_deg);
             }
             break;
         }
@@ -408,6 +416,52 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
             }
             break;
         }
+        case MESH_PORT_REMOTE_HARDWARE: {
+            mesh_remote_hw_t h;
+            if (mesh_decode_remote_hw(ev->payload, ev->payload_len, &h)) {
+                if (h.type) jw_field_u32(j, "hw_type", h.type);
+                if (h.gpio_mask)  jw_field_u32(j, "hw_gpio_mask",  (uint32_t)h.gpio_mask);
+                if (h.gpio_value) jw_field_u32(j, "hw_gpio_value", (uint32_t)h.gpio_value);
+                if (h.txid)       jw_field_u32(j, "hw_txid", h.txid);
+            }
+            break;
+        }
+        case MESH_PORT_DETECTION_SENSOR: {
+            mesh_detection_t d;
+            if (mesh_decode_detection(ev->payload, ev->payload_len, &d)) {
+                if (d.text[0]) jw_field_str(j, "detection_text", d.text);
+            }
+            break;
+        }
+        case MESH_PORT_PAXCOUNTER: {
+            mesh_paxcounter_t pc;
+            if (mesh_decode_paxcounter(ev->payload, ev->payload_len, &pc)) {
+                jw_field_u32(j, "pax_wifi",   pc.wifi);
+                jw_field_u32(j, "pax_ble",    pc.ble);
+                jw_field_u32(j, "pax_uptime_s", pc.uptime_s);
+            }
+            break;
+        }
+        case MESH_PORT_STORE_FORWARD: {
+            mesh_storeforward_t sf;
+            if (mesh_decode_storeforward(ev->payload, ev->payload_len, &sf)) {
+                const char *rr = mesh_storeforward_rr_name(sf.rr);
+                if (rr) jw_field_str(j, "sf_rr", rr);
+                else    jw_field_u32(j, "sf_rr_id", sf.rr);
+                if (sf.have_stats) {
+                    jw_field_u32(j, "sf_total",     sf.stats_total);
+                    jw_field_u32(j, "sf_history",   sf.stats_history);
+                    jw_field_u32(j, "sf_max",       sf.stats_max);
+                    jw_field_u32(j, "sf_uptime_s",  sf.stats_up_time_s);
+                    jw_field_u32(j, "sf_requests",  sf.stats_requests);
+                }
+                if (sf.have_history) {
+                    jw_field_u32(j, "sf_hist_count",  sf.hist_count);
+                    jw_field_u32(j, "sf_hist_window_s", sf.hist_window_s);
+                }
+            }
+            break;
+        }
         }
     } else {
         jw_field_bool(j, "decrypted", false);
@@ -492,4 +546,5 @@ void feed_publish_event(const mesh_event_t *ev)
     mqtt_publish(buf, j.len);
     zmq_pub_publish(buf, j.len);
     web_publish_line(buf, j.len);
+    archive_publish(buf, j.len);
 }

@@ -128,6 +128,13 @@ extern char *opt_gpsd_endpoint;          /* "host:port"; NULL = disabled */
 extern char *opt_api_token;              /* bearer token for POST /api endpoints; NULL = unauthenticated */
 extern char *opt_pcap_path;              /* path to pcap file; NULL = disabled */
 extern char *opt_pcap_fifo;              /* path to pcap fifo; NULL = disabled */
+extern char *opt_psk_wordlist;           /* path to wordlist; NULL = disabled */
+extern char *opt_archive_dir;            /* JSONL archive directory; NULL = disabled */
+extern char *opt_geofence_file;          /* polygon file path; NULL = disabled */
+extern char *opt_announce_to;            /* fusion /api/sensors URL; NULL = disabled */
+extern char *opt_c2_dealer;              /* tcp://fusion:7009; NULL = HTTP-only */
+extern char *opt_zmq_curve_secret;       /* path to Z85 secret key file; sets server CURVE on PUB */
+extern char *opt_zmq_curve_keygen;       /* generate keypair to PATH (.pub written alongside) and exit */
 
 int  options_parse(int argc, char **argv);
 void options_print_help(const char *prog);

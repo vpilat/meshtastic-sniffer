@@ -92,6 +92,10 @@ char *opt_mqtt_host               = NULL;
 int   opt_mqtt_port               = 1883;
 char *opt_mqtt_topic              = NULL;
 char *opt_zmq_endpoint            = NULL;
+char *opt_announce_to             = NULL;
+char *opt_c2_dealer               = NULL;
+char *opt_zmq_curve_secret        = NULL;
+char *opt_zmq_curve_keygen        = NULL;
 char *opt_cot_multicast           = NULL;
 int   opt_web_port                = 0;
 char *opt_station_id              = NULL;
@@ -99,6 +103,9 @@ char *opt_gpsd_endpoint           = NULL;
 char *opt_api_token               = NULL;
 char *opt_pcap_path               = NULL;
 char *opt_pcap_fifo               = NULL;
+char *opt_psk_wordlist            = NULL;
+char *opt_archive_dir             = NULL;
+char *opt_geofence_file           = NULL;
 
 void options_print_help(const char *prog)
 {
@@ -190,6 +197,34 @@ void options_print_help(const char *prog)
         "                         file (DLT_USER0=147). Use with tshark / Wireshark.\n"
         "  --pcap-fifo=PATH       like --pcap but creates PATH as a named pipe;\n"
         "                         start `wireshark -k -i PATH` for live capture.\n"
+        "  --psk-wordlist=PATH    background dictionary attack on undecrypted frames.\n"
+        "                         File format: one PSK spec per line (same grammar\n"
+        "                         as --keys: default | simpleN | hex:HHHH... |\n"
+        "                         base64:...). Discovered keys auto-add to the\n"
+        "                         runtime keyset; PSK_DISCOVERED events fire per hit.\n"
+        "  --archive=DIR          long-term JSONL archive. Every emitted event is\n"
+        "                         appended to DIR/meshtastic-YYYYMMDD.jsonl.gz\n"
+        "                         (gzipped, daily rotation at UTC midnight).\n"
+        "  --geofence=PATH        load polygons from PATH (INI-style: [name]\n"
+        "                         section + lat,lon vertices, one per line).\n"
+        "                         Emits GEOFENCE_ENTRY / GEOFENCE_EXIT events when\n"
+        "                         a positioned node crosses a polygon boundary.\n"
+        "  --announce-to=URL      periodically POST this sensor's entry to a\n"
+        "                         meshtastic-fusion /api/sensors endpoint so\n"
+        "                         the fusion auto-discovers it. URL example:\n"
+        "                         http://fusion.local:9000/api/sensors\n"
+        "  --c2-dealer=tcp://...  open an outbound ZMQ DEALER socket to the\n"
+        "                         fusion's ROUTER for command-and-control over\n"
+        "                         a single multiplexed connection (works through\n"
+        "                         NAT). Coexists with --web HTTP /api/* endpoints.\n"
+        "  --zmq-curve-secret=PATH\n"
+        "                         load Z85 server secret key from PATH and\n"
+        "                         enable CurveZMQ on --zmq PUB. PATH.pub must\n"
+        "                         contain the matching public key (publish to\n"
+        "                         fusion as the sensor's curve_pub field).\n"
+        "  --zmq-curve-keygen=PATH\n"
+        "                         generate a CurveZMQ keypair, write secret to\n"
+        "                         PATH and public to PATH.pub, then exit.\n"
         "\n"
         "Misc:\n"
         "  --simd-generic         force scalar SIMD (debug)\n"
@@ -250,7 +285,8 @@ int options_parse(int argc, char **argv)
         O_REGION, O_PRESETS, O_KEYS, O_KEYS_FILE, O_SHARE_URL, O_EXTRA_FREQ,
         O_IQ_RECORD, O_STATS_JSON,
         O_FEED, O_MQTT, O_MQTT_TOPIC, O_ZMQ, O_COT, O_WEB, O_STATION, O_GPSD, O_API_TOKEN,
-        O_PCAP, O_PCAP_FIFO,
+        O_PCAP, O_PCAP_FIFO, O_PSK_WORDLIST, O_ARCHIVE, O_GEOFENCE, O_ANNOUNCE_TO, O_C2_DEALER,
+        O_ZMQ_CURVE_SECRET, O_ZMQ_CURVE_KEYGEN,
         O_DECODE, O_SCAN, O_SCAN_DEC, O_ALERT_OFF_GRID,
         O_SIMD_GEN, O_SELFTEST, O_LIST, O_SCHEMA,
     };
@@ -290,6 +326,13 @@ int options_parse(int argc, char **argv)
         { "api-token",  required_argument, NULL, O_API_TOKEN },
         { "pcap",       required_argument, NULL, O_PCAP },
         { "pcap-fifo",  required_argument, NULL, O_PCAP_FIFO },
+        { "psk-wordlist", required_argument, NULL, O_PSK_WORDLIST },
+        { "archive",    required_argument, NULL, O_ARCHIVE },
+        { "geofence",   required_argument, NULL, O_GEOFENCE },
+        { "announce-to", required_argument, NULL, O_ANNOUNCE_TO },
+        { "c2-dealer", required_argument, NULL, O_C2_DEALER },
+        { "zmq-curve-secret", required_argument, NULL, O_ZMQ_CURVE_SECRET },
+        { "zmq-curve-keygen", required_argument, NULL, O_ZMQ_CURVE_KEYGEN },
         { "decode",     no_argument,       NULL, O_DECODE },
         { "scan",       no_argument,       NULL, O_SCAN },
         { "scan-and-decode", no_argument,  NULL, O_SCAN_DEC },
@@ -399,6 +442,13 @@ int options_parse(int argc, char **argv)
         case O_API_TOKEN:  opt_api_token = strdup(optarg); break;
         case O_PCAP:       opt_pcap_path = strdup(optarg); break;
         case O_PCAP_FIFO:  opt_pcap_fifo = strdup(optarg); break;
+        case O_PSK_WORDLIST: opt_psk_wordlist = strdup(optarg); break;
+        case O_ARCHIVE:    opt_archive_dir = strdup(optarg); break;
+        case O_GEOFENCE:   opt_geofence_file = strdup(optarg); break;
+        case O_ANNOUNCE_TO: opt_announce_to = strdup(optarg); break;
+        case O_C2_DEALER:  opt_c2_dealer = strdup(optarg); break;
+        case O_ZMQ_CURVE_SECRET: opt_zmq_curve_secret = strdup(optarg); break;
+        case O_ZMQ_CURVE_KEYGEN: opt_zmq_curve_keygen = strdup(optarg); break;
 
         case O_DECODE:           opt_op_mode = OP_MODE_DECODE; break;
         case O_SCAN:             opt_op_mode = OP_MODE_SCAN; break;

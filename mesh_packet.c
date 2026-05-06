@@ -31,6 +31,7 @@
  */
 
 #include "mesh_packet.h"
+#include "psk_dict.h"
 #include "protobuf.h"
 
 #include <openssl/evp.h>
@@ -201,6 +202,7 @@ int mesh_packet_decode_with_radio(const uint8_t *frame, size_t frame_len,
     ev.sf      = sf;
     ev.cr      = cr;
     ev.bw_hz   = bw_hz;
+    ev.slot_id = -1; /* main.c's on_mesh_event fills this from the user pointer */
     /* Resolve preset name from (sf, cr, bw_hz) by exact match against the
      * canonical Meshtastic preset table. Both narrow (sub-GHz) and wide
      * (LORA_24) bandwidth columns are checked. */
@@ -281,6 +283,12 @@ int mesh_packet_decode_with_radio(const uint8_t *frame, size_t frame_len,
     if (!emitted && cb) {
         ev.decrypted = false;
         cb(&ev, user);
+        /* Ship the undecrypted frame to the PSK dictionary attack thread
+         * (no-op unless --psk-wordlist is configured). The thread tries
+         * each wordlist candidate in the background; on success the
+         * discovered key is added to the runtime keyset so subsequent
+         * frames on this channel decrypt normally. */
+        psk_dict_enqueue(frame, frame_len, rssi_db, snr_db, sf, cr, bw_hz);
     }
     return 0;
 }
