@@ -150,6 +150,10 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
     jw_field_u32(j, "channel",    ev->header.channel);
     jw_field_u32(j, "hop_limit",  (uint32_t)ev->hop_limit);
     jw_field_u32(j, "hop_start",  (uint32_t)ev->hop_start);
+    /* Upper byte of the relayer's node id; topology view can resolve
+     * this to a known node when one is present in the keyset. */
+    if (ev->header.relay_node)
+        jw_field_u32(j, "relay_node", (uint32_t)ev->header.relay_node);
     if (ev->want_ack) jw_field_bool(j, "want_ack", true);
     if (ev->via_mqtt) jw_field_bool(j, "via_mqtt", true);
     if (ev->rssi_db != 0.0f) jw_field_f32(j, "rssi_db", ev->rssi_db);
