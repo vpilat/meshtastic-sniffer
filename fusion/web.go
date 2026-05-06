@@ -66,21 +66,7 @@ func (h *SSEHub) register() (chan []byte, func()) {
 	}
 }
 
-const indexHTML = `<!doctype html>
-<html><head><meta charset="utf-8"><title>meshtastic-fusion</title>
-<style>
-body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;
-     max-width:780px;margin:40px auto;padding:0 20px;line-height:1.5}
-h1{color:#38bdf8;margin-bottom:6px;font-weight:600}
-.muted{color:#64748b}
-code{background:#1e293b;padding:2px 6px;border-radius:3px;color:#bae6fd}
-</style></head><body>
-<h1>meshtastic-fusion</h1>
-<p class=muted>Multi-station aggregator. Web dashboard arrives in a follow-up commit.</p>
-<p>Live event stream: <code>GET /events</code> (Server-Sent Events).</p>
-<p>Each event is a JSON line tagged with the originating station (the sniffer's
-<code>--station-id</code>). Same wire shape as the per-sniffer dashboard's SSE.</p>
-</body></html>`
+// indexHTML is defined in dashboard.go as dashboardHTML.
 
 // startWebServer runs an HTTP server on `listen` that serves the placeholder
 // index, /events SSE endpoint, and /api/sensors registry endpoints.
@@ -93,7 +79,7 @@ func startWebServer(ctx context.Context, listen string, hub *SSEHub, registry *R
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(indexHTML))
+		_, _ = w.Write([]byte(dashboardHTML))
 	})
 	mux.HandleFunc("/api/sensors", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
