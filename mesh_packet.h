@@ -54,6 +54,14 @@ typedef struct mesh_event {
      * (synthetic test events, etc.). */
     int            slot_id;
 
+    /* RF-quality telemetry from the LoRa demod. The fields below are
+     * computed for every received frame; main.c stamps them onto the
+     * event before publish via on_mesh_event. Defaults (zero / false)
+     * mean "no useful value to report" and feed.c suppresses them. */
+    bool           has_crc;          /* payload had a trailing CRC16 trailer */
+    bool           payload_crc_ok;   /* CRC verified; meaningful only when has_crc */
+    float          cfo_hz;           /* carrier-frequency offset estimate */
+
     /* Inner Data envelope (when decrypted == true) */
     uint32_t       portnum;
     const uint8_t *payload;

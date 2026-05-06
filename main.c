@@ -39,6 +39,7 @@
 #include <complex.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -240,21 +241,37 @@ static void replay_check(const mesh_event_t *ev)
     e->in_use = true;
 }
 
+/* Per-emit context handed to mesh_packet_decode_with_radio so the
+ * post-decode callback can stamp slot id + RF-quality telemetry the
+ * decode function itself doesn't know about (PFB slot index, CRC
+ * validity, CFO from the LoRa demod meta). */
+typedef struct {
+    int   channel_id;
+    bool  has_crc;
+    bool  payload_crc_ok;
+    float cfo_hz;
+} frame_emit_ctx_t;
+
 static void on_mesh_event(const mesh_event_t *ev, void *user) {
-    intptr_t channel_id = (intptr_t)user;
+    const frame_emit_ctx_t *ctx = (const frame_emit_ctx_t *)user;
+    int channel_id = ctx ? ctx->channel_id : -1;
     if (ev->decrypted) {
         __atomic_add_fetch(&g_decrypts_total, 1, __ATOMIC_RELAXED);
         if (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS)
             __atomic_add_fetch(&g_chan_stats[channel_id].decrypted, 1, __ATOMIC_RELAXED);
     }
-    /* Inject the decoder slot id into the event so the JSON serializer
-     * can surface it. The slot id comes via the lora_decoder_t's user
-     * pointer (set in build_channel_set with the slot's index). */
-    mesh_event_t with_slot = *ev;
-    with_slot.slot_id = (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS)
-                        ? (int)channel_id : -1;
-    replay_check(&with_slot);
-    feed_publish_event(&with_slot);
+    /* Stamp slot id + RF-quality telemetry onto the event copy so
+     * feed.c can surface them in JSON without touching the decoder. */
+    mesh_event_t stamped = *ev;
+    stamped.slot_id = (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS)
+                      ? channel_id : -1;
+    if (ctx) {
+        stamped.has_crc        = ctx->has_crc;
+        stamped.payload_crc_ok = ctx->payload_crc_ok;
+        stamped.cfo_hz         = ctx->cfo_hz;
+    }
+    replay_check(&stamped);
+    feed_publish_event(&stamped);
 }
 
 /* Delayed best-pick dedup of PFB bin-leakage copies.
@@ -415,16 +432,31 @@ static void dedup_emit_locked(const dedup_entry_t *e)
         pcap_out_write_frame(e->best_payload, e->best_payload_len,
                              (uint32_t)ts.tv_sec, (uint32_t)(ts.tv_nsec / 1000));
     }
+    frame_emit_ctx_t ctx = {
+        .channel_id     = (int)channel_id,
+        .has_crc        = e->best_meta.has_crc,
+        .payload_crc_ok = e->best_meta.payload_crc_ok,
+        .cfo_hz         = e->best_meta.cfo_hz,
+    };
     mesh_packet_decode_with_radio(e->best_payload, e->best_payload_len,
                                   e->best_meta.rssi_db, e->best_meta.snr_db,
                                   e->best_meta.sf, e->best_meta.cr,
                                   e->best_meta.bw_hz,
-                                  g_keys, on_mesh_event, (void *)channel_id);
+                                  g_keys, on_mesh_event, &ctx);
 }
 
 /* Per-tick batch capacity. ~30 ms window x ~few hundred frames/sec
  * upper bound = handful of expirations per 5 ms tick on a busy mesh. */
 #define DEDUP_DRAIN_BATCH 64
+
+/* Drainer liveness + late-emit telemetry. The drainer ticks every 5 ms;
+ * if the wall-clock interval between successful emits stretches past
+ * 2x the dedup window without the thread exiting, the stats heartbeat
+ * surfaces it. Stragglers count emits where now > emit_at + 2x window
+ * (a leakage replica that arrived after the cluster was already
+ * supposed to flush -- diagnoses CPU saturation). */
+static _Atomic uint64_t g_drainer_last_tick_us = 0;
+static _Atomic uint64_t g_dedup_stragglers     = 0;
 
 static void *dedup_drainer_thread(void *arg)
 {
@@ -439,11 +471,15 @@ static void *dedup_drainer_thread(void *arg)
     while (g_dedup_drainer_run) {
         usleep(5000); /* 5 ms tick = ~6 ticks per window */
         uint64_t now_us = monotonic_us();
+        atomic_store_explicit(&g_drainer_last_tick_us, now_us, memory_order_relaxed);
         int n = 0;
         pthread_mutex_lock(&g_dedup_mu);
         for (int i = 0; i < DEDUP_RING_SIZE && n < DEDUP_DRAIN_BATCH; ++i) {
             dedup_entry_t *e = &g_dedup[i];
             if (e->in_use && now_us >= e->emit_at_us) {
+                if (now_us > e->emit_at_us + 2ULL * DEDUP_WINDOW_US) {
+                    atomic_fetch_add_explicit(&g_dedup_stragglers, 1, memory_order_relaxed);
+                }
                 batch[n++] = *e;
                 e->in_use = false;
             }
@@ -558,6 +594,17 @@ static void *stats_thread(void *arg)
             uint64_t og  = __atomic_load_n(&g_offgrid_total,  __ATOMIC_RELAXED);
             double rate_msps = (double)(s - prev_samples) / 5.0e6;
             prev_samples = s;
+            /* Drainer liveness: if the dedup tick hasn't moved in 5x its
+             * window (150 ms), the thread has died or is wedged. Log
+             * once per stats heartbeat so it surfaces but doesn't spam. */
+            uint64_t now_us = monotonic_us();
+            uint64_t last_tick = atomic_load_explicit(&g_drainer_last_tick_us,
+                                                     memory_order_relaxed);
+            if (last_tick && now_us - last_tick > 5ULL * DEDUP_WINDOW_US) {
+                fprintf(stderr, "[stats] WARN dedup drainer silent for %.0f ms -- frames may be backing up\n",
+                        (double)(now_us - last_tick) / 1000.0);
+            }
+            uint64_t strag = atomic_load_explicit(&g_dedup_stragglers, memory_order_relaxed);
             /* Off-grid count only meaningful when the scanner is wired up.
              * In plain --decode the number is permanently 0; suppress it
              * everywhere it's surfaced rather than print a misleading zero. */
@@ -573,20 +620,22 @@ static void *stats_thread(void *arg)
             /* Mirror the same numbers to the web SSE stream so the
              * dashboard's persistent header can show them live. */
             if (opt_web_port > 0) {
-                char sline[256];
+                char sline[320];
                 int sn;
                 if (scanner_on)
                     sn = snprintf(sline, sizeof(sline),
                         "{\"event\":\"STATS\",\"msps\":%.2f,\"frames\":%llu,"
-                        "\"decrypted\":%llu,\"off_grid\":%llu}\n",
+                        "\"decrypted\":%llu,\"off_grid\":%llu,\"stragglers\":%llu}\n",
                         rate_msps, (unsigned long long)f,
-                        (unsigned long long)d, (unsigned long long)og);
+                        (unsigned long long)d, (unsigned long long)og,
+                        (unsigned long long)strag);
                 else
                     sn = snprintf(sline, sizeof(sline),
                         "{\"event\":\"STATS\",\"msps\":%.2f,\"frames\":%llu,"
-                        "\"decrypted\":%llu}\n",
+                        "\"decrypted\":%llu,\"stragglers\":%llu}\n",
                         rate_msps, (unsigned long long)f,
-                        (unsigned long long)d);
+                        (unsigned long long)d,
+                        (unsigned long long)strag);
                 if (sn > 0) web_publish_line(sline, (size_t)sn);
             }
 

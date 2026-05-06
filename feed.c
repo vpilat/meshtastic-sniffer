@@ -176,6 +176,14 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
     if (ev->via_mqtt) jw_field_bool(j, "via_mqtt", true);
     if (ev->rssi_db != 0.0f) jw_field_f32(j, "rssi_db", ev->rssi_db);
     if (ev->snr_db  != 0.0f) jw_field_f32(j, "snr_db",  ev->snr_db);
+    /* RF-quality telemetry. payload_crc_ok only emitted when a CRC was
+     * actually present and FAILED -- the success-path stays quiet to
+     * keep the JSON tight. cfo only when |cfo| > 100 Hz so well-tuned
+     * radios don't spam noise. */
+    if (ev->has_crc && !ev->payload_crc_ok)
+        jw_field_bool(j, "payload_crc_ok", false);
+    if (ev->cfo_hz > 100.0f || ev->cfo_hz < -100.0f)
+        jw_field_f32(j, "cfo_hz", ev->cfo_hz);
 
     /* Radio-layer fields: which physical preset/SF/CR/BW the frame arrived on.
      * Useful for operators bucketing traffic across multiple parallel demods. */
