@@ -34,32 +34,38 @@ import (
 // Frame is the subset of sniffer event JSON fields we care about for
 // multi-station correlation. Anything else passes through unparsed.
 type Frame struct {
-	Event       string  `json:"event,omitempty"`
-	Station     string  `json:"station,omitempty"`
-	StationLat  float64 `json:"station_lat,omitempty"`
-	StationLon  float64 `json:"station_lon,omitempty"`
-	From        string  `json:"from,omitempty"`
-	PacketID    uint32  `json:"packet_id,omitempty"`
-	ChannelHash uint8   `json:"channel_hash,omitempty"`   /* 1-byte routing hash from radio header */
-	SlotID      int     `json:"slot_id,omitempty"`        /* decoder slot index that caught the frame */
-	ChannelName string  `json:"channel_name,omitempty"`   /* human label, only when decrypted */
-	Preset      string  `json:"preset,omitempty"`
-	HopLimit    int     `json:"hop_limit,omitempty"`
-	HopStart    int     `json:"hop_start,omitempty"`
-	SnrDB       float64 `json:"snr_db,omitempty"`
-	RssiDB      float64 `json:"rssi_db,omitempty"`
-	Decrypted   *bool   `json:"decrypted,omitempty"`
-	PortName    string  `json:"port_name,omitempty"`
+	Event          string  `json:"event,omitempty"`
+	Station        string  `json:"station,omitempty"`
+	StationLat     float64 `json:"station_lat,omitempty"`
+	StationLon     float64 `json:"station_lon,omitempty"`
+	StationAltM    float64 `json:"station_alt_m,omitempty"`
+	StationTNs     uint64  `json:"station_t_ns,omitempty"`     /* sensor capture timestamp (ns since epoch) */
+	StationTAccNs  uint32  `json:"station_t_acc_ns,omitempty"` /* clock-discipline class for mlat weighting */
+	From           string  `json:"from,omitempty"`
+	PacketID       uint32  `json:"packet_id,omitempty"`
+	ChannelHash    uint8   `json:"channel_hash,omitempty"`     /* 1-byte routing hash from radio header */
+	SlotID         int     `json:"slot_id,omitempty"`          /* decoder slot index that caught the frame */
+	ChannelName    string  `json:"channel_name,omitempty"`     /* human label, only when decrypted */
+	Preset         string  `json:"preset,omitempty"`
+	HopLimit       int     `json:"hop_limit,omitempty"`
+	HopStart       int     `json:"hop_start,omitempty"`
+	SnrDB          float64 `json:"snr_db,omitempty"`
+	RssiDB         float64 `json:"rssi_db,omitempty"`
+	Decrypted      *bool   `json:"decrypted,omitempty"`
+	PortName       string  `json:"port_name,omitempty"`
 }
 
 // Observation is one (station, frame) tuple inside a cluster.
 type Observation struct {
-	Station    string
-	StationLat float64
-	StationLon float64
-	SnrDB      float64
-	RssiDB     float64
-	At         time.Time
+	Station       string
+	StationLat    float64
+	StationLon    float64
+	StationAltM   float64
+	StationTNs    uint64
+	StationTAccNs uint32
+	SnrDB         float64
+	RssiDB        float64
+	At            time.Time
 }
 
 // Cluster groups same-packet observations from one transmission.
@@ -176,7 +182,11 @@ func main() {
 	}
 	flag.Parse()
 	endpoints := flag.Args()
-	if len(endpoints) == 0 && *sensorsFile == "" {
+	// Accept zero sensors at startup if either a sensors-file is
+	// configured (sensors get added at runtime via /api/sensors POST or
+	// auto-announce) or a c2-router is up (sensors will dial in via
+	// DEALER and self-register through the announce path).
+	if len(endpoints) == 0 && *sensorsFile == "" && *c2Router == "" && *listen == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -257,6 +267,7 @@ loop:
 			}
 			c.Observations = append(c.Observations, Observation{
 				Station: station, StationLat: f.StationLat, StationLon: f.StationLon,
+				StationAltM: f.StationAltM, StationTNs: f.StationTNs, StationTAccNs: f.StationTAccNs,
 				SnrDB: f.SnrDB, RssiDB: f.RssiDB, At: now,
 			})
 		case now := <-tick.C:
@@ -266,6 +277,12 @@ loop:
 				if hub != nil {
 					if b, err := txEventJSON(c, registry.pool.EndpointCount()); err == nil {
 						hub.Publish(b)
+					}
+					/* Multilateration: when 3+ observations carry station
+					 * positions and timestamps, run the solver and publish
+					 * a GEOLOCATED event alongside the TX consolidation. */
+					if g := tryGeolocate(c); g != nil {
+						hub.Publish(g)
 					}
 				}
 				consolidated++
@@ -283,4 +300,59 @@ loop:
 	for _, c := range flushReady(pending, 0, time.Now()) {
 		printCluster(c, registry.pool.EndpointCount())
 	}
+}
+
+// tryGeolocate runs the mlat solver on a cluster's observations.
+// Filters out observations without a station position or timestamp,
+// runs Solve when 3+ usable observations remain, and returns a
+// JSON-encoded GEOLOCATED event for the SSE hub. Returns nil when
+// there's nothing to publish (insufficient data, solver failure).
+func tryGeolocate(c *Cluster) []byte {
+	usable := make([]MlatObservation, 0, len(c.Observations))
+	for _, o := range c.Observations {
+		if o.StationTNs == 0 || o.StationLat == 0 || o.StationLon == 0 {
+			continue
+		}
+		// Drop observations from very-poorly-disciplined clocks; with
+		// 50 ms+ accuracy class the solver result is dominated by that
+		// station's noise. 100 ms is a generous threshold.
+		if o.StationTAccNs > 100_000_000 {
+			continue
+		}
+		usable = append(usable, MlatObservation{
+			StationName: o.Station, Lat: o.StationLat, Lon: o.StationLon,
+			AltM: o.StationAltM, TNs: o.StationTNs, TAccNs: o.StationTAccNs,
+		})
+	}
+	if len(usable) < 3 {
+		return nil
+	}
+	res, err := Solve(usable)
+	if err != nil {
+		return nil
+	}
+	out := struct {
+		Event        string  `json:"event"`
+		From         string  `json:"from"`
+		PacketID     uint32  `json:"packet_id"`
+		Lat          float64 `json:"lat"`
+		Lon          float64 `json:"lon"`
+		UncertaintyM float64 `json:"uncertainty_m"`
+		StationCount int     `json:"station_count"`
+		Iterations   int     `json:"iterations"`
+	}{
+		Event:        "GEOLOCATED",
+		From:         c.Frame.From,
+		PacketID:     c.Frame.PacketID,
+		Lat:          res.Lat,
+		Lon:          res.Lon,
+		UncertaintyM: res.UncertaintyM,
+		StationCount: res.StationCount,
+		Iterations:   res.Iterations,
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return b
 }

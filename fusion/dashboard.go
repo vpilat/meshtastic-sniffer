@@ -303,7 +303,9 @@ function refreshLive(){
 }
 function fmtAgo(ts){
   if (!ts) return '--';
-  const dt = Math.max(0, Math.floor(Date.now()/1000) - ts);
+  // ts is fractional epoch seconds; floor the delta to avoid rendering
+  // float garbage like '14.936086893081665s'.
+  const dt = Math.max(0, Math.floor(Date.now()/1000 - ts));
   if (dt < 60) return dt+'s';
   if (dt < 3600) return Math.floor(dt/60)+'m';
   return Math.floor(dt/3600)+'h';
