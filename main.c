@@ -316,7 +316,15 @@ static void on_mesh_event(const mesh_event_t *ev, void *user) {
  * chirp without merging adjacent unrelated transmissions. */
 #define DEDUP_RING_SIZE         512
 #define DEDUP_WINDOW_US         30000   /* 30 ms is well past leakage spread */
-#define DEDUP_FP_HAMMING_THRESH 14
+#define DEDUP_FP_HAMMING_THRESH 14      /* clean replicas: ~5 bit-flip differences */
+/* When the new replica's payload CRC is bad, byte-level corruption pushes
+ * the XOR-fold fingerprint far away from the clean cluster's fingerprint.
+ * Loosen the match threshold so 8-15 bit errors per replica still fold.
+ * The probability of an unrelated frame pair landing within Hamming 22 of
+ * each other on uniformly random 64-bit fingerprints is ~0.6%, well below
+ * the false-merge cost (one bogus extra observation in a 30 ms cluster) of
+ * the alternative (15 phantom replicas as separate clusters). */
+#define DEDUP_FP_HAMMING_THRESH_CRCFAIL 22
 #define DEDUP_MAX_PAYLOAD       256
 
 /* 64-bit XOR-fold fingerprint of the payload bytes. Two near-identical
@@ -384,8 +392,16 @@ static void dedup_buffer(const uint8_t *payload, size_t payload_len,
     int sf = meta ? meta->sf    : 0;
     int bw = meta ? meta->bw_hz : 0;
     float snr = meta ? meta->snr_db : 0.0f;
+    bool crc_bad = meta && meta->has_crc && !meta->payload_crc_ok;
     uint64_t fp = payload_fingerprint(payload, payload_len);
     uint64_t now_us = monotonic_us();
+
+    /* Pick the matching threshold up-front: clean replicas use the tight
+     * 14-bit window; CRC-failed replicas use the looser 22-bit window so
+     * heavy byte-level corruption still folds into the right cluster
+     * instead of forking 15 phantom siblings. */
+    const int thresh = crc_bad ? DEDUP_FP_HAMMING_THRESH_CRCFAIL
+                               : DEDUP_FP_HAMMING_THRESH;
 
     pthread_mutex_lock(&g_dedup_mu);
     dedup_entry_t *match = NULL;
@@ -398,7 +414,7 @@ static void dedup_buffer(const uint8_t *payload, size_t payload_len,
         }
         if (e->sf != sf || e->bw_hz != bw) continue;
         int hd = __builtin_popcountll(e->fp ^ fp);
-        if (hd <= DEDUP_FP_HAMMING_THRESH) { match = e; break; }
+        if (hd <= thresh) { match = e; break; }
     }
     if (match) {
         match->replica_count++;
