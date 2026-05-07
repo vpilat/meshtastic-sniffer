@@ -7,7 +7,7 @@ Sister project to [iridium-sniffer](https://github.com/alphafox02/iridium-sniffe
 ## Features
 
 - Polyphase filterbank channelizer (AVX2/SSE4.2/NEON SIMD), one wide IQ stream into N parallel per-channel basebands at `Fs/M` each
-- All Meshtastic regions: US (902-928), EU_868, EU_433, CN, JP, ANZ, KR, TW, RU, IN, NZ_865, TH, UA_433, UA_868, MY_433, MY_919, SG_923, KZ_433, KZ_863, NP_865, BR_902, PH_433/868/915, LORA_24
+- All 26 Meshtastic regions selectable per run via `--region=`: US (902-928), EU_868, EU_433, CN, JP, ANZ, KR, TW, RU, IN, NZ_865, TH, UA_433, UA_868, MY_433, MY_919, SG_923, KZ_433, KZ_863, NP_865, BR_902, PH_433/868/915, LORA_24. **One region per binary invocation** — Meshtastic regions span 433 MHz to 2.4 GHz, well beyond any commodity SDR's instantaneous bandwidth, so multi-region monitoring is run as multiple sniffer instances on different SDRs aggregated by [meshtastic-fusion](fusion/).
 - All 9 standard presets: ShortTurbo, ShortFast, ShortSlow, MediumFast, MediumSlow, LongFast, LongMod, LongSlow, LongTurbo
 - Multi-key AES-128 / AES-256-CTR with 1-byte channel-hash routing -- adding more keys does NOT slow per-packet decode (steady state: 1 AES op per packet)
 - Per-port protobuf decode for `TEXT_MESSAGE_APP`, `POSITION_APP`, `NODEINFO_APP`, `TELEMETRY_APP` (DeviceMetrics + EnvironmentMetrics + PowerMetrics), `ROUTING_APP`, `TRACEROUTE_APP`, `WAYPOINT_APP`, `ADMIN_APP`, `NEIGHBORINFO_APP`, `KEY_VERIFICATION_APP`, `MAP_REPORT_APP`, `ATAK_PLUGIN`, `REMOTE_HARDWARE_APP`, `DETECTION_SENSOR_APP`, `STORE_FORWARD_APP`, `PAXCOUNTER_APP`. Other ports surface as raw bytes in JSON.
@@ -16,7 +16,7 @@ Sister project to [iridium-sniffer](https://github.com/alphafox02/iridium-sniffe
 - Per-frame RSSI/SNR + on-failure CRC + drift-only CFO telemetry carried through into the JSON event and the dashboard
 - Built-in web dashboard (Live map / Activity / Topology / Config), runtime key + extra-freq additions without restart
 - JSON, UDP, MQTT, ZMQ PUB, CoT XML multicast, daily-rotated gzipped JSONL archive, libpcap streaming export output sinks
-- PSK dictionary attack against undecrypted frames (`--psk-wordlist=PATH`), GPSDO-friendly geofence ENTRY/EXIT alerts (`--geofence=PATH`), CurveZMQ on the PUB socket (`--zmq-curve-secret=PATH`)
+- PSK dictionary attack against undecrypted frames (`--psk-wordlist=PATH`), geofence ENTRY/EXIT alerts on positioned nodes (`--geofence=PATH`), CurveZMQ on the PUB socket (`--zmq-curve-secret=PATH`)
 - Replay-attack flagging on duplicate `(from, packet_id)` tuples beyond the normal mesh retransmit window
 - Multi-station deployment: emit ZMQ telemetry to a [meshtastic-fusion](fusion/) aggregator, optionally self-register via `--announce-to=URL`, optional outbound DEALER socket (`--c2-dealer=tcp://fusion:7009`) for NAT-friendly C2
 - `--schema` dumps the JSON event schema (JSON Schema 2020-12) so SIEM consumers can validate without guessing
@@ -38,7 +38,7 @@ The number of channels you stare at simultaneously is set by the SDR's analog ba
 
 | SDR | Bandwidth | Coverage at default rate | Notes |
 |-----|-----------|--------------------------|-------|
-| HackRF One | 20 MHz | 41/104 US LongFast slots, all wider-spaced presets | Most common config; partial cover but every preset is visible |
+| HackRF One | 20 MHz | 409 channels at `--presets=all` US (41 LongFast slots + every other preset's slot grid that fits) | Most common config; partial cover of LongFast but every preset is decoded in parallel |
 | BladeRF 2.0 | 56 MHz | All 104 US LongFast slots | AD9361, full ISM band coverage |
 | USRP B210 | 56 MHz | All 104 US LongFast slots | UHD-driven |
 | SDRplay (RSPdx, RSP1A) | 10 MHz | One BW group + adjacent presets | Native API |
@@ -271,7 +271,7 @@ A companion CLI tool [meshtastic-recover](recover/) reads captured pcaps (`--pca
 ./meshtastic-sniffer --file=session.pcap --keys-file=recovered.keys
 ```
 
-GPU acceleration via a [hashcat](https://hashcat.net) custom-mode plugin is in progress on a sister branch (`meshtastic-plugin` in our hashcat fork). The recover binary already produces hashcat-compatible hash files via `--hashcat-export=PATH` so the plugin can drop in without format changes when ready. See [recover/README.md](recover/README.md) for the format spec and verifier algorithm.
+GPU acceleration via a [hashcat](https://hashcat.net) custom-mode plugin (status: working end-to-end on real-radio captures, pending upstream PR cleanup). The recover binary produces hashcat-compatible hash files via `--hashcat-export=PATH` and `--channel-name=NAME`. See [recover/README.md](recover/README.md) for the format spec and verifier algorithm.
 
 Realistic attack surface: factory-default channels recover instantly; weak-passphrase channels recover from a rockyou-class wordlist in seconds; channels using a strong randomly-generated 16/32-byte PSK are not feasible to recover.
 

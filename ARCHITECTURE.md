@@ -213,7 +213,7 @@ What's verified:
 - **STATS SSE event**: arrives at the dashboard within one heartbeat
 - **AddressSanitizer + UndefinedBehaviorSanitizer**: zero findings on the smoke-test suite (selftest, file replay, web API hits, key adds)
 - **ThreadSanitizer**: zero data races under concurrent `/api/keys` POSTs hitting while the demod thread is in `keyset_lookup`
-- **Polyphase channelizer throughput**: 30+ Msps sustained on a single i7 core, with 41-channel + multi-preset US grid
+- **Polyphase channelizer throughput**: 30+ Msps sustained on a single i7 core, with the full US `--presets=all` grid (409 channels at 20 MHz HackRF: 41 LongFast + 41 each of ShortFast/Slow/MediumFast/Slow + 81 each of LongModerate/LongSlow + 21 each of ShortTurbo/LongTurbo)
 
 Known runtime concerns deliberately not blocked-on:
 

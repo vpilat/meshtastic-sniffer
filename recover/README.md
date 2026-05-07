@@ -75,13 +75,19 @@ recovered instantly from this pass.
 ### Flags
 
 ```
---pcap=FILE         libpcap input (DLT_USER0 from --pcap=PATH on the sniffer)
---wordlist=FILE     candidate PSKs, one per line; supports base64:/hex:/simpleN/
-                    plain-passphrase forms
---simple-keys       also try simple1..simple255 against common channel names
---output=FILE       append recovered keys here (default: stdout)
---max-frames=N      stop after testing N frames per candidate (0 = all)
--h, --help          this help
+--pcap=FILE              libpcap input (DLT_USER0 from --pcap=PATH on the sniffer)
+--wordlist=FILE          candidate PSKs, one per line; supports base64:/hex:/simpleN/
+                         plain-passphrase forms
+--simple-keys            also try simple1..simple255 against common channel names
+--output=FILE            recovered keys written here, --keys-file= compatible
+                         (default: stdout)
+--hashcat-export=FILE    emit each frame as a hashcat-format hash line for the
+                         upcoming custom-mode plugin (mode 99001 in dev range)
+--channel-name=NAME      populate the <name_hex> field on hashcat export when
+                         the channel name is known (matches WPA-EAPOL's
+                         ESSID-in-hash pattern). Empty by default.
+--max-frames=N           stop after testing N frames per candidate (0 = all)
+-h, --help               this help
 ```
 
 ## Realistic attack surface
@@ -181,13 +187,18 @@ export is just a derived view.
 
 ## Honest limitations
 
-- **The captured frame's bytes must be intact.** Bit errors in the
-  cleartext header (from / packet_id) will mangle the AES-CTR nonce
-  even with the right key, breaking recovery. Test your captures by
-  running the sniffer against the same pcap and checking that frames
-  come through with `payload_crc_ok` either passing or absent (i.e.
-  no CRC failure).
-- **No GPU support yet.** CPU-only.
+- **The AES nonce bytes must be intact.** Bit errors in the cleartext
+  header at the `from` (4 bytes) or `packet_id` (4 bytes) positions
+  mangle the AES-CTR nonce, breaking recovery even with the right
+  key. Bit errors elsewhere in the frame (header tail bytes, body
+  ciphertext) are tolerated as long as the protobuf-shape verifier
+  still gates a clean parse on the decrypted bytes -- empirically
+  recovery often succeeds against `payload_crc_ok: false` frames
+  when the corruption misses the structural fields.
+- **GPU support via hashcat is in flight, not yet upstream.** Working
+  end-to-end on a sister branch (`meshtastic-plugin` in our hashcat
+  fork). The `--hashcat-export` output here is the consumed format.
+  CPU OpenMP-parallel is the default for now.
 - **No PMKID-style attack.** Meshtastic doesn't have an EAPOL handshake;
   the per-frame channel-hash + ciphertext is the only side-channel the
   attacker has, and we use both.
