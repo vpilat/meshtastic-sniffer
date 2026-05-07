@@ -167,6 +167,22 @@ You have a Meshtastic node and an SDR. You want to see what your node and its ne
 # Off-grid scan only (no decode, just discover non-standard LoRa freqs):
 ./meshtastic-sniffer --hackrf --scan --alert-off-grid
 
+# Long-running deployment: gzipped daily archive, geofence alerts, PSK dictionary
+# attack against unknown channels, replay-attack flagging on duplicate (from, pid):
+./meshtastic-sniffer --hackrf --keys-file=$HOME/.config/meshtastic-sniffer/keys \
+                    --archive=/var/log/meshtastic \
+                    --geofence=$HOME/.config/meshtastic-sniffer/zones.ini \
+                    --psk-wordlist=/usr/share/dict/words \
+                    --pcap=/data/meshtastic.pcap --web=8888
+
+# Multi-station: register with a meshtastic-fusion aggregator on the same VPN,
+# expose a NAT-friendly DEALER C2 socket back to it.
+./meshtastic-sniffer --hackrf --keys=default --station-id=rooftop \
+                    --gpsd=localhost:2947 --web=8888 \
+                    --zmq=tcp://*:7008 \
+                    --announce-to=http://fusion.local:9000/api/sensors \
+                    --c2-dealer=tcp://fusion.local:7009
+
 # List every SDR you have plugged in:
 ./meshtastic-sniffer --list
 

@@ -166,12 +166,13 @@ static void post_once(void)
 static void *announce_thread(void *arg)
 {
     (void)arg;
-    /* First post on a short delay so the sensor is up first. */
-    int initial = 3;
-    for (int i = 0; i < initial && atomic_load(&A.running); ++i) sleep(1);
+    /* First post is fired synchronously by announce_init() so a
+     * short-running session (e.g. file-replay smoke test) still
+     * registers with the fusion. The thread covers periodic re-posts. */
     while (atomic_load(&A.running)) {
-        post_once();
         for (int i = 0; i < ANNOUNCE_INTERVAL_S && atomic_load(&A.running); ++i) sleep(1);
+        if (!atomic_load(&A.running)) break;
+        post_once();
     }
     return NULL;
 }
@@ -184,6 +185,9 @@ bool announce_init(const char *url)
         return false;
     }
     atomic_store(&A.running, 1);
+    /* Inline first POST so a short-running session (file-replay smoke
+     * test, brief --selftest) still registers before the binary exits. */
+    post_once();
     if (pthread_create(&A.thr, NULL, announce_thread, NULL) != 0) {
         atomic_store(&A.running, 0);
         return false;
