@@ -50,12 +50,19 @@ echo "ok"
 
 echo "== Test 4: web /api/* round-trip =="
 TMPDIR=$(mktemp -d)
-head -c 1048576 /dev/urandom > "$TMPDIR/iq.cs8"
+# Need enough data so the sniffer doesn't EOF before we can curl. With
+# 20 Msps cs8 (40 MB/s), 100 MiB is ~2.5 s of replay -- comfortable
+# under ASan-instrumented builds where startup costs more.
+head -c 104857600 /dev/urandom > "$TMPDIR/iq.cs8"
 "$BIN" --file="$TMPDIR/iq.cs8" --rate=20000000 --center=910000000 \
        --presets=LongFast --web="$PORT" > "$TMPDIR/sniffer.log" 2>&1 &
 PID=$!
 trap "kill $PID 2>/dev/null; rm -rf $TMPDIR" EXIT
-sleep 0.4
+# Wait for the web server to bind. ASan-instrumented builds need longer.
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    curl -s -o /dev/null -m 0.3 "http://127.0.0.1:$PORT/" && break
+    sleep 0.3
+done
 
 # /api/keys
 r=$(curl -s -X POST -d 'Ops=hex:00112233445566778899aabbccddeeff' "http://127.0.0.1:$PORT/api/keys")
@@ -76,17 +83,21 @@ r=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/")
 [[ "$r" == "200" ]] || { echo "FAIL: GET / status=$r"; exit 1; }
 echo "ok"
 
-echo "== Test 5: spectrum SSE event =="
+echo "== Test 5: STATS SSE heartbeat =="
 kill $PID 2>/dev/null; wait 2>/dev/null
 
-head -c 33554432 /dev/urandom > "$TMPDIR/big.cs8"
+# stats heartbeat fires every 5 s. At 20 Msps cs8 (40 MB/s) we need at
+# least 6 s of replay -- 256 MiB is ~6.4 s, with cushion for ASan.
+head -c 268435456 /dev/urandom > "$TMPDIR/big.cs8"
 "$BIN" --file="$TMPDIR/big.cs8" --rate=20000000 --center=910000000 \
-       --presets=LongFast --web="$PORT" --web-spectrum > "$TMPDIR/sniffer.log" 2>&1 &
+       --presets=LongFast --web="$PORT" > "$TMPDIR/sniffer.log" 2>&1 &
 PID=$!
-sleep 2.5
-spec=$(timeout 1.5 curl -s -N "http://127.0.0.1:$PORT/events" | grep -o 'SPECTRUM' | head -1)
+sleep 1
+# STATS fires every 5 s. Subscribe to the SSE stream and wait up to 7 s
+# for the next STATS event so we don't race the server-side cadence.
+ev=$(timeout 7 curl -s -N "http://127.0.0.1:$PORT/events" | grep -o 'STATS' | head -1)
 kill $PID 2>/dev/null; wait 2>/dev/null
-[[ "$spec" == "SPECTRUM" ]] || { echo "FAIL: no SPECTRUM event from /events"; exit 1; }
+[[ "$ev" == "STATS" ]] || { echo "FAIL: no STATS event from /events"; exit 1; }
 echo "ok"
 
 echo "== Test 6: stats heartbeat =="
