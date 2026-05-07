@@ -123,6 +123,7 @@ extern char *opt_zmq_endpoint;
 extern char *opt_cot_multicast;          /* "239.2.3.1:6969" or NULL */
 extern int   opt_web_port;
 extern char *opt_station_id;
+extern char *opt_gpsd_endpoint;          /* "host:port"; NULL = disabled */
 
 int  options_parse(int argc, char **argv);
 void options_print_help(const char *prog);

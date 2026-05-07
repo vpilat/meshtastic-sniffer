@@ -113,6 +113,7 @@ set(SOURCES
     ${PROJECT_SOURCE_DIR}/mesh_packet.c
     ${PROJECT_SOURCE_DIR}/mesh_decoders.c
     ${PROJECT_SOURCE_DIR}/feed.c
+    ${PROJECT_SOURCE_DIR}/gpsd.c
     ${PROJECT_SOURCE_DIR}/scanner.c
     ${PROJECT_SOURCE_DIR}/web.c
     ${PROJECT_SOURCE_DIR}/cot.c

@@ -15,6 +15,7 @@
 
 #include "channelizer.h"
 #include "feed.h"
+#include "gpsd.h"
 #include "fftw_lock.h"
 #include "file_src.h"
 #include "keyset.h"
@@ -1233,6 +1234,13 @@ static int run_live(void)
     }
 
     feed_init();
+    if (opt_gpsd_endpoint) {
+        if (gpsd_init(opt_gpsd_endpoint))
+            fprintf(stderr, "gpsd: tagging events with station_lat/_lon/_alt_m from %s\n",
+                    opt_gpsd_endpoint);
+        else
+            fprintf(stderr, "gpsd: failed to start client thread; events won't be tagged\n");
+    }
     if (opt_web_port > 0) {
         web_init(opt_web_port);
         /* Make this visible on stdout (not just stderr) so users
@@ -1281,6 +1289,7 @@ static int run_live(void)
     if (g_iq_record_fp) { fclose(g_iq_record_fp); g_iq_record_fp = NULL; }
     web_shutdown();
     feed_shutdown();
+    gpsd_shutdown();
     for (int i = 0; i < CHANNELIZER_MAX_CHANNELS; ++i) {
         if (g_demods[i]) { lora_decoder_destroy(g_demods[i]); g_demods[i] = NULL; }
     }

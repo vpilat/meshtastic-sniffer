@@ -8,6 +8,7 @@
 
 #include "cot.h"
 #include "feed.h"
+#include "gpsd.h"
 #include "mesh_decoders.h"
 #include "meshtastic.h"
 #include "node_db.h"
@@ -138,6 +139,18 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
     gettimeofday(&tv, NULL);
     double ts = (double)tv.tv_sec + (double)tv.tv_usec / 1e6;
     jw_field_f64(j, "ts", ts);
+
+    /* Station GPS (when --gpsd is configured and a recent fix is in).
+     * 30 s freshness window: gpsd updates ~1 Hz typical, so anything
+     * older than that means we've lost fix and the position is stale. */
+    if (opt_gpsd_endpoint) {
+        double s_lat, s_lon, s_alt = 0, s_age = 0;
+        if (gpsd_get_fix(&s_lat, &s_lon, &s_alt, &s_age) && s_age < 30.0) {
+            jw_field_f64(j, "station_lat", s_lat);
+            jw_field_f64(j, "station_lon", s_lon);
+            if (s_alt != 0.0) jw_field_f32(j, "station_alt_m", (float)s_alt);
+        }
+    }
 
     /* Header */
     char id_buf[16];

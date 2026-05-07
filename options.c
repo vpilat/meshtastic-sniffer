@@ -94,6 +94,7 @@ char *opt_zmq_endpoint            = NULL;
 char *opt_cot_multicast           = NULL;
 int   opt_web_port                = 0;
 char *opt_station_id              = NULL;
+char *opt_gpsd_endpoint           = NULL;
 
 void options_print_help(const char *prog)
 {
@@ -169,6 +170,11 @@ void options_print_help(const char *prog)
         "                         multicast group (default port 6969). LAN-scope.\n"
         "  --web[=PORT]           built-in dashboard (default 8888)\n"
         "  --station-id=ID        station identifier in feed messages\n"
+        "  --gpsd[=HOST:PORT]     read this station's own GPS from gpsd\n"
+        "                         (default localhost:2947). Tags every emitted\n"
+        "                         JSON event with station_lat / station_lon /\n"
+        "                         station_alt_m so a multi-station deployment\n"
+        "                         can group same-packet observations spatially.\n"
         "\n"
         "Misc:\n"
         "  --simd-generic         force scalar SIMD (debug)\n"
@@ -227,7 +233,7 @@ int options_parse(int argc, char **argv)
         O_CENTER, O_RATE, O_GAIN, O_BIAS, O_PPM, O_CLOCK,
         O_REGION, O_PRESETS, O_KEYS, O_KEYS_FILE, O_SHARE_URL, O_EXTRA_FREQ,
         O_IQ_RECORD, O_STATS_JSON,
-        O_FEED, O_MQTT, O_MQTT_TOPIC, O_ZMQ, O_COT, O_WEB, O_STATION,
+        O_FEED, O_MQTT, O_MQTT_TOPIC, O_ZMQ, O_COT, O_WEB, O_STATION, O_GPSD,
         O_DECODE, O_SCAN, O_SCAN_DEC, O_ALERT_OFF_GRID,
         O_SIMD_GEN, O_SELFTEST, O_LIST,
     };
@@ -263,6 +269,7 @@ int options_parse(int argc, char **argv)
         { "cot-multicast", required_argument, NULL, O_COT },
         { "web",        optional_argument, NULL, O_WEB },
         { "station-id", required_argument, NULL, O_STATION },
+        { "gpsd",       optional_argument, NULL, O_GPSD },
         { "decode",     no_argument,       NULL, O_DECODE },
         { "scan",       no_argument,       NULL, O_SCAN },
         { "scan-and-decode", no_argument,  NULL, O_SCAN_DEC },
@@ -367,6 +374,7 @@ int options_parse(int argc, char **argv)
         case O_COT:        opt_cot_multicast = strdup(optarg); break;
         case O_WEB:        opt_web_port = optarg ? atoi(optarg) : 8888; break;
         case O_STATION:    opt_station_id = strdup(optarg); break;
+        case O_GPSD:       opt_gpsd_endpoint = strdup(optarg ? optarg : "localhost:2947"); break;
 
         case O_DECODE:           opt_op_mode = OP_MODE_DECODE; break;
         case O_SCAN:             opt_op_mode = OP_MODE_SCAN; break;
