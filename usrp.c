@@ -18,6 +18,7 @@
 
 #include <uhd.h>
 
+#include "options.h"
 #include "sdr.h"
 #include "usrp.h"
 
@@ -126,6 +127,25 @@ void *usrp_backend_setup(const char *serial)
 
     if (uhd_usrp_make(&usrp, arg) != UHD_ERROR_NONE)
         errx(1, "USRP make failed (serial=%s)", serial ? serial : "(any)");
+
+    /* Clock + time source: external/gpsdo for time-disciplined captures
+     * (Octoclock, internal GPSDO daughter, GPSDO-disciplined external 10
+     * MHz + 1PPS). Internal stays the default. Order matters per UHD:
+     * set the clock source first, then time, then sample-rate-dependent
+     * config -- changing clock source after rate corrupts the rate set. */
+    if (opt_clock_src == CLOCK_SRC_EXTERNAL) {
+        if (uhd_usrp_set_clock_source(usrp, "external", 0) != UHD_ERROR_NONE)
+            warnx("USRP set_clock_source(external)");
+        if (uhd_usrp_set_time_source(usrp, "external", 0) != UHD_ERROR_NONE)
+            warnx("USRP set_time_source(external)");
+        fprintf(stderr, "USRP: clock+time = external (10 MHz + 1PPS in)\n");
+    } else if (opt_clock_src == CLOCK_SRC_GPSDO) {
+        if (uhd_usrp_set_clock_source(usrp, "gpsdo", 0) != UHD_ERROR_NONE)
+            warnx("USRP set_clock_source(gpsdo) -- requires GPSDO module");
+        if (uhd_usrp_set_time_source(usrp, "gpsdo", 0) != UHD_ERROR_NONE)
+            warnx("USRP set_time_source(gpsdo)");
+        fprintf(stderr, "USRP: clock+time = gpsdo (internal GPSDO module)\n");
+    }
 
     if (uhd_usrp_set_rx_rate(usrp, samp_rate, 0) != UHD_ERROR_NONE)
         errx(1, "USRP set_rx_rate");
