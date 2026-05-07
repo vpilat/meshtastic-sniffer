@@ -330,7 +330,7 @@ static void dedup_emit_locked(const dedup_entry_t *e)
                                   g_keys, on_mesh_event, (void *)channel_id);
 }
 
-/* Per-tick batch capacity. ~30 ms window × ~few hundred frames/sec
+/* Per-tick batch capacity. ~30 ms window x ~few hundred frames/sec
  * upper bound = handful of expirations per 5 ms tick on a busy mesh. */
 #define DEDUP_DRAIN_BATCH 64
 
@@ -444,53 +444,18 @@ static void *watchdog_thread(void *arg)
     return NULL;
 }
 
-/* Heartbeat thread: stderr stats every 5s + (when --web-spectrum) a 1s
- * spectrum snapshot pushed to the web SSE stream. */
+/* Heartbeat thread: stderr stats + SSE STATS event every 5 s. */
 static void *stats_thread(void *arg)
 {
     (void)arg;
 #ifdef _GNU_SOURCE
     pthread_setname_np(pthread_self(), "stats");
 #endif
-    static float spectrum_buf[16384];
     uint64_t prev_samples = 0;
     int      stats_counter = 0;
     while (running) {
         for (int i = 0; i < 10 && running; ++i) usleep(100000); /* 1s, interruptible */
         if (!running) break;
-
-        /* Spectrum snapshot every iteration when scanner present + --web-spectrum on. */
-        if (g_scanner && opt_web_spectrum && opt_web_port > 0) {
-            int N = scanner_snapshot(g_scanner, spectrum_buf, (int)(sizeof(spectrum_buf)/sizeof(float)));
-            if (N > 0) {
-                /* Downsample to 256 bins by max within each block so we keep peaks. */
-                const int OUT = 256;
-                float bins[OUT]; for (int b = 0; b < OUT; ++b) bins[b] = 0.0f;
-                int per = N / OUT;
-                if (per > 0) {
-                    for (int b = 0; b < OUT; ++b) {
-                        float m = 0.0f;
-                        for (int k = 0; k < per; ++k) {
-                            float v = spectrum_buf[b * per + k];
-                            if (v > m) m = v;
-                        }
-                        bins[b] = m;
-                    }
-                    /* Encode as JSON dB. */
-                    char line[8192];
-                    int n = snprintf(line, sizeof(line),
-                        "{\"event\":\"SPECTRUM\",\"f_center\":%.0f,\"samp_rate\":%.0f,\"bins\":[",
-                        center_freq, samp_rate);
-                    for (int b = 0; b < OUT && n + 12 < (int)sizeof(line); ++b) {
-                        double db = bins[b] > 0.0f ? 10.0 * log10((double)bins[b]) : -120.0;
-                        n += snprintf(line + n, sizeof(line) - n,
-                                      "%s%.1f", b ? "," : "", db);
-                    }
-                    n += snprintf(line + n, sizeof(line) - n, "]}\n");
-                    if (n > 0) web_publish_line(line, (size_t)n);
-                }
-            }
-        }
 
         /* 5s stderr stats + optional per-channel JSON. */
         if (++stats_counter >= 5) {
@@ -501,19 +466,35 @@ static void *stats_thread(void *arg)
             uint64_t og  = __atomic_load_n(&g_offgrid_total,  __ATOMIC_RELAXED);
             double rate_msps = (double)(s - prev_samples) / 5.0e6;
             prev_samples = s;
-            fprintf(stderr, "[stats] %.2f Msps in, %llu LoRa frames, %llu decrypted, %llu off-grid hits\n",
-                    rate_msps, (unsigned long long)f, (unsigned long long)d,
-                    (unsigned long long)og);
+            /* Off-grid count only meaningful when the scanner is wired up.
+             * In plain --decode the number is permanently 0; suppress it
+             * everywhere it's surfaced rather than print a misleading zero. */
+            const int scanner_on = (g_scanner != NULL);
+            if (scanner_on)
+                fprintf(stderr, "[stats] %.2f Msps in, %llu LoRa frames, %llu decrypted, %llu off-grid hits\n",
+                        rate_msps, (unsigned long long)f, (unsigned long long)d,
+                        (unsigned long long)og);
+            else
+                fprintf(stderr, "[stats] %.2f Msps in, %llu LoRa frames, %llu decrypted\n",
+                        rate_msps, (unsigned long long)f, (unsigned long long)d);
 
             /* Mirror the same numbers to the web SSE stream so the
              * dashboard's persistent header can show them live. */
             if (opt_web_port > 0) {
                 char sline[256];
-                int sn = snprintf(sline, sizeof(sline),
-                    "{\"event\":\"STATS\",\"msps\":%.2f,\"frames\":%llu,"
-                    "\"decrypted\":%llu,\"off_grid\":%llu}\n",
-                    rate_msps, (unsigned long long)f,
-                    (unsigned long long)d, (unsigned long long)og);
+                int sn;
+                if (scanner_on)
+                    sn = snprintf(sline, sizeof(sline),
+                        "{\"event\":\"STATS\",\"msps\":%.2f,\"frames\":%llu,"
+                        "\"decrypted\":%llu,\"off_grid\":%llu}\n",
+                        rate_msps, (unsigned long long)f,
+                        (unsigned long long)d, (unsigned long long)og);
+                else
+                    sn = snprintf(sline, sizeof(sline),
+                        "{\"event\":\"STATS\",\"msps\":%.2f,\"frames\":%llu,"
+                        "\"decrypted\":%llu}\n",
+                        rate_msps, (unsigned long long)f,
+                        (unsigned long long)d);
                 if (sn > 0) web_publish_line(sline, (size_t)sn);
             }
 
@@ -1065,6 +1046,31 @@ static int run_live(void)
     fprintf(stderr, "RF: center %.3f MHz, rate %.3f Msps%s\n",
             center_freq / 1e6, samp_rate / 1e6,
             (opt_sdr_backend == SDR_BACKEND_VITA49) ? " (from VITA-49 context)" : "");
+    fprintf(stderr, "    coverage window: %.3f .. %.3f MHz\n",
+            (center_freq - samp_rate * 0.5) / 1e6,
+            (center_freq + samp_rate * 0.5) / 1e6);
+
+    /* Sanity-check user-supplied --center against the configured region's
+     * spectrum. Warn-only -- the user may legitimately be on an SDR with a
+     * frequency offset, or pointing at an off-grid signal -- but loudly
+     * enough that a typo (--center=950e6 for a US deployment) is obvious. */
+    if (opt_center_freq_hz != 0 && opt_region) {
+        const mesh_region_t *r = mesh_lookup_region(opt_region);
+        if (r) {
+            double lo_hz = r->f_lo_mhz * 1.0e6;
+            double hi_hz = r->f_hi_mhz * 1.0e6;
+            double win_lo = center_freq - samp_rate * 0.5;
+            double win_hi = center_freq + samp_rate * 0.5;
+            if (win_hi < lo_hz || win_lo > hi_hz) {
+                fprintf(stderr,
+                    "WARNING: --center %.3f MHz puts the coverage window\n"
+                    "         (%.3f .. %.3f MHz) entirely outside region %s\n"
+                    "         (%.0f .. %.0f MHz). Did you mean a different region?\n",
+                    center_freq / 1e6, win_lo / 1e6, win_hi / 1e6,
+                    r->name, r->f_lo_mhz, r->f_hi_mhz);
+            }
+        }
+    }
 
     /* Keyset:
      *   - --keys=...       (CLI csv)
@@ -1136,14 +1142,15 @@ static int run_live(void)
     if (n > 0)
         fprintf(stderr, "configured %d channel(s) total.\n", n);
 
-    /* Scanner instance for --scan, --scan-and-decode, --alert-off-grid,
-     * or --web-spectrum (the dashboard pulls FFT snapshots from it). */
-    if (opt_op_mode != OP_MODE_DECODE || opt_alert_off_grid || opt_web_spectrum) {
+    /* Scanner instance for --scan, --scan-and-decode, or --alert-off-grid.
+     * Energy-detector FFT that fires off-grid LoRa-shaped alerts. */
+    if (opt_op_mode != OP_MODE_DECODE || opt_alert_off_grid) {
         g_scanner = scanner_create((uint64_t)center_freq, (uint32_t)samp_rate, 4096);
         if (g_scanner) {
             scanner_set_known_grid(g_scanner, g_grid_freqs, g_grid_bws, g_grid_count);
             scanner_set_callback(g_scanner, on_off_grid_discovery, NULL);
-            fprintf(stderr, "scanner: enabled (4096-bin FFT, excluding %d grid channels)\n",
+            fprintf(stderr, "scanner: enabled with off-grid alerts "
+                            "(4096-bin FFT, excluding %d grid channels)\n",
                     g_grid_count);
         }
     }
@@ -1162,12 +1169,12 @@ static int run_live(void)
         web_init(opt_web_port);
         /* Make this visible on stdout (not just stderr) so users
          * launching from a GUI / through `tee` etc. see it. */
-        fprintf(stdout, "Open http://localhost:%d to see decoded packets, edit keys, see spectrum.\n",
+        fprintf(stdout, "Open http://localhost:%d to see decoded packets, channel activity, edit keys.\n",
                 opt_web_port);
         fflush(stdout);
     } else {
         fprintf(stderr,
-          "(no dashboard. add --web=8888 for a Leaflet map + Config tab + spectrum waterfall.)\n");
+          "(no dashboard. add --web=8888 for a Leaflet map + Activity + Config tabs.)\n");
     }
 
     /* 5s stats heartbeat thread + 2s/30s friendly watchdogs. */
