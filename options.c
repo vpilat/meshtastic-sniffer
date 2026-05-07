@@ -148,6 +148,12 @@ void options_print_help(const char *prog)
         "                         (close-range default 30); 40..60 adds LNA in 8 dB\n"
         "                         steps (distant rooftop ~50); 60..70 maxes both;\n"
         "                         70+ enables the 14 dB front-end amp (very weak).\n"
+        "  --hackrf-lna=N         HackRF: explicit LNA gain in dB (0..40 step 8).\n"
+        "                         Overrides whatever --gain mapped.\n"
+        "  --hackrf-vga=N         HackRF: explicit VGA gain in dB (0..62 step 2).\n"
+        "                         Overrides whatever --gain mapped.\n"
+        "  --hackrf-amp           HackRF: enable the 14 dB front-end amp.\n"
+        "  --hackrf-amp-off       HackRF: disable the front-end amp (default).\n"
         "  --bias-tee             enable antenna bias tee where supported\n"
         "  --ppm=PPM              SDR oscillator correction\n"
         "  --clock=internal|external|gpsdo\n"
@@ -294,11 +300,16 @@ int options_parse(int argc, char **argv)
         O_FEED, O_MQTT, O_MQTT_TOPIC, O_ZMQ, O_COT, O_WEB, O_STATION, O_GPSD, O_API_TOKEN,
         O_PCAP, O_PCAP_FIFO, O_PSK_WORDLIST, O_ARCHIVE, O_GEOFENCE, O_ANNOUNCE_TO, O_C2_DEALER,
         O_ZMQ_CURVE_SECRET, O_ZMQ_CURVE_KEYGEN, O_STATION_T_ACC_NS,
+        O_HACKRF_LNA, O_HACKRF_VGA, O_HACKRF_AMP, O_HACKRF_AMP_OFF,
         O_DECODE, O_SCAN, O_SCAN_DEC, O_ALERT_OFF_GRID,
         O_SIMD_GEN, O_SELFTEST, O_LIST, O_SCHEMA,
     };
     static const struct option longopts[] = {
         { "hackrf",     optional_argument, NULL, O_HACKRF },
+        { "hackrf-lna", required_argument, NULL, O_HACKRF_LNA },
+        { "hackrf-vga", required_argument, NULL, O_HACKRF_VGA },
+        { "hackrf-amp", no_argument,       NULL, O_HACKRF_AMP },
+        { "hackrf-amp-off", no_argument,   NULL, O_HACKRF_AMP_OFF },
         { "bladerf",    optional_argument, NULL, O_BLADERF },
         { "rtlsdr",     optional_argument, NULL, O_RTLSDR },
         { "soapy",      required_argument, NULL, O_SOAPY },
@@ -458,6 +469,10 @@ int options_parse(int argc, char **argv)
         case O_ZMQ_CURVE_SECRET: opt_zmq_curve_secret = strdup(optarg); break;
         case O_ZMQ_CURVE_KEYGEN: opt_zmq_curve_keygen = strdup(optarg); break;
         case O_STATION_T_ACC_NS: opt_station_t_acc_ns = (uint32_t)strtoul(optarg, NULL, 10); break;
+        case O_HACKRF_LNA: hackrf_lna_gain = atoi(optarg); break;
+        case O_HACKRF_VGA: hackrf_vga_gain = atoi(optarg); break;
+        case O_HACKRF_AMP: hackrf_amp_enable = 1; break;
+        case O_HACKRF_AMP_OFF: hackrf_amp_enable = 0; break;
 
         case O_DECODE:           opt_op_mode = OP_MODE_DECODE; break;
         case O_SCAN:             opt_op_mode = OP_MODE_SCAN; break;
