@@ -16,6 +16,7 @@
 #include "channelizer.h"
 #include "feed.h"
 #include "gpsd.h"
+#include "schema.h"
 #include "fftw_lock.h"
 #include "file_src.h"
 #include "keyset.h"
@@ -1327,6 +1328,11 @@ int main(int argc, char **argv)
             "meshtastic-sniffer (build " __DATE__ " " __TIME__ ")\n"
             "  %d regions, %d presets compiled in.\n",
             MESH_REGION_COUNT, (int)MESH_PRESET_COUNT);
+
+    if (opt_print_schema) {
+        schema_print();
+        return 0;
+    }
 
     if (opt_list_devices) {
         fprintf(stdout, "Available SDR devices:\n");

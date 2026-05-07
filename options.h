@@ -60,6 +60,7 @@ extern bool          opt_force_simd_generic;
 extern op_mode_t     opt_op_mode;
 extern bool          opt_alert_off_grid;
 extern bool          opt_list_devices;
+extern bool          opt_print_schema;
 
 /* Meshtastic */
 extern char         *opt_region;          /* "US", "EU_868", ... */

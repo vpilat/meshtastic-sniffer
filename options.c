@@ -34,6 +34,7 @@ bool          opt_force_simd_generic  = false;
 op_mode_t     opt_op_mode             = OP_MODE_DECODE;
 bool          opt_alert_off_grid      = false;
 bool          opt_list_devices        = false;
+bool          opt_print_schema        = false;
 
 char         *opt_region              = NULL;
 char         *opt_preset_csv          = NULL;
@@ -188,6 +189,7 @@ void options_print_help(const char *prog)
         "  --simd-generic         force scalar SIMD (debug)\n"
         "  --selftest             run self-tests (channelizer + AES end-to-end)\n"
         "  --list                 enumerate all available SDR devices and exit\n"
+        "  --schema               print JSON Schema for the event format and exit\n"
         "  -v, --verbose          INFO+WARN diagnostics (-vv DEBUG, -vvv TRACE)\n"
         "  -h, --help\n",
         prog, EXTRA_FREQ_MAX, FEED_MAX);
@@ -243,7 +245,7 @@ int options_parse(int argc, char **argv)
         O_IQ_RECORD, O_STATS_JSON,
         O_FEED, O_MQTT, O_MQTT_TOPIC, O_ZMQ, O_COT, O_WEB, O_STATION, O_GPSD, O_API_TOKEN,
         O_DECODE, O_SCAN, O_SCAN_DEC, O_ALERT_OFF_GRID,
-        O_SIMD_GEN, O_SELFTEST, O_LIST,
+        O_SIMD_GEN, O_SELFTEST, O_LIST, O_SCHEMA,
     };
     static const struct option longopts[] = {
         { "hackrf",     optional_argument, NULL, O_HACKRF },
@@ -286,6 +288,7 @@ int options_parse(int argc, char **argv)
         { "simd-generic", no_argument,     NULL, O_SIMD_GEN },
         { "selftest",   no_argument,       NULL, O_SELFTEST },
         { "list",       no_argument,       NULL, O_LIST },
+        { "schema",     no_argument,       NULL, O_SCHEMA },
         { "help",       no_argument,       NULL, 'h' },
         { "verbose",    no_argument,       NULL, 'v' },
         { NULL, 0, NULL, 0 },
@@ -394,6 +397,7 @@ int options_parse(int argc, char **argv)
         case O_SIMD_GEN: opt_force_simd_generic = true; break;
         case O_SELFTEST: return 100;
         case O_LIST:     opt_list_devices = true; break;
+        case O_SCHEMA:   opt_print_schema = true; break;
 
         default:
             options_print_help(argv[0]);
