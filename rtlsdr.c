@@ -92,18 +92,16 @@ void *rtlsdr_backend_setup(int dev_index) {
     if (agc_enabled)
         fprintf(stderr, "RTL-SDR: AGC enabled\n");
 
-    /* Find nearest supported gain value.
-     * Default to max gain (496 = 49.6 dB) for weak satellite signals,
-     * matching SDRReceiver's default. Override with --soapy-gain. */
+    /* Find nearest supported gain value. rtl_gain_tenths_db is the
+     * canonical knob for RTL-class tuners (set by --gain=N as N*10);
+     * the -1 sentinel means "user didn't specify" and we fall back to
+     * max gain (~49.6 dB on R820T/R828D) for marginal-SNR captures. */
     int num_gains = rtlsdr_get_tuner_gains(dev, NULL);
     if (num_gains > 0) {
         int *gains = malloc((size_t)num_gains * sizeof(int));
         rtlsdr_get_tuner_gains(dev, gains);
 
-        /* Use max gain if user didn't specify */
-        double gain_target = soapy_gain_val;
-        if (gain_target <= 40.0) gain_target = 49.6;  /* max for R820T/R828D */
-        int target = (int)(gain_target * 10.0);  /* tenths of dB */
+        int target = (rtl_gain_tenths_db < 0) ? 496 : rtl_gain_tenths_db;
         int best = gains[0];
         int best_diff = abs(target - gains[0]);
         for (int i = 1; i < num_gains; i++) {
