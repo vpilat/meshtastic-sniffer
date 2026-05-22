@@ -309,7 +309,7 @@ int options_parse(int argc, char **argv)
         { "soapy",      required_argument, NULL, O_SOAPY },
         { "sdrplay",    optional_argument, NULL, O_SDRPLAY },
         { "airspy",     optional_argument, NULL, O_AIRSPY },
-        { "usrp",       required_argument, NULL, O_USRP },
+        { "usrp",       optional_argument, NULL, O_USRP },
         { "vita49",     required_argument, NULL, O_VITA49 },
         { "file",       required_argument, NULL, O_FILE },
         { "iq-format",  required_argument, NULL, O_IQ_FORMAT },
