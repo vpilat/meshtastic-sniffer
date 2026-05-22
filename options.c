@@ -75,6 +75,11 @@ char *soapy_setting_keys[SOAPY_SETTINGS_MAX];
 char *soapy_setting_vals[SOAPY_SETTINGS_MAX];
 int    soapy_setting_count = 0;
 char  *uhd_args         = NULL;
+/* UHD over-the-wire IQ format: "sc16" (default, 4 B/sample, preserves the
+ * full 12-bit ADC) or "sc8" (2 B/sample, halves USB bandwidth at the cost
+ * of 4 LSBs). sc8 is fine for LoRa decode and avoids USB overflow on
+ * B-series at >= 20 Msps full-channel-grid captures. */
+char  *opt_usrp_otw_format = NULL;
 int    usrp_gain_val    = 40;
 int    vita49_enabled   = 0;
 char  *vita49_endpoint  = NULL;
@@ -294,7 +299,7 @@ int options_parse(int argc, char **argv)
         O_FEED, O_MQTT, O_MQTT_TOPIC, O_ZMQ, O_COT, O_WEB, O_STATION, O_GPSD, O_API_TOKEN,
         O_PCAP, O_PCAP_FIFO, O_PSK_WORDLIST, O_ARCHIVE, O_GEOFENCE, O_ANNOUNCE_TO, O_C2_DEALER,
         O_ZMQ_CURVE_SECRET, O_ZMQ_CURVE_KEYGEN, O_STATION_T_ACC_NS,
-        O_HACKRF_LNA, O_HACKRF_VGA, O_HACKRF_AMP, O_HACKRF_AMP_OFF,
+        O_HACKRF_LNA, O_HACKRF_VGA, O_HACKRF_AMP, O_HACKRF_AMP_OFF, O_USRP_OTW,
         O_DECODE, O_SCAN, O_SCAN_DEC, O_ALERT_OFF_GRID,
         O_SIMD_GEN, O_SELFTEST, O_LIST, O_SCHEMA,
     };
@@ -310,6 +315,7 @@ int options_parse(int argc, char **argv)
         { "sdrplay",    optional_argument, NULL, O_SDRPLAY },
         { "airspy",     optional_argument, NULL, O_AIRSPY },
         { "usrp",       optional_argument, NULL, O_USRP },
+        { "usrp-otw",   required_argument, NULL, O_USRP_OTW },
         { "vita49",     required_argument, NULL, O_VITA49 },
         { "file",       required_argument, NULL, O_FILE },
         { "iq-format",  required_argument, NULL, O_IQ_FORMAT },
@@ -380,6 +386,13 @@ int options_parse(int argc, char **argv)
                          * an explicit serial; downstream strdup(NULL) would
                          * crash. Treat absent serial as empty string. */
                         uhd_args = strdup(optarg ? optarg : ""); break;
+        case O_USRP_OTW:
+            if (strcasecmp(optarg, "sc16") != 0 && strcasecmp(optarg, "sc8") != 0) {
+                fprintf(stderr, "--usrp-otw must be sc16 or sc8 (got %s)\n", optarg);
+                return 2;
+            }
+            opt_usrp_otw_format = strdup(optarg);
+            break;
         case O_VITA49:  if (set_backend(SDR_BACKEND_VITA49,  optarg) < 0) return 2;
                         vita49_endpoint = strdup(optarg);
                         vita49_enabled = 1;

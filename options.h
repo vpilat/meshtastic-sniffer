@@ -109,6 +109,7 @@ extern char  *soapy_setting_keys[SOAPY_SETTINGS_MAX];
 extern char  *soapy_setting_vals[SOAPY_SETTINGS_MAX];
 extern int    soapy_setting_count;
 extern char  *uhd_args;
+extern char  *opt_usrp_otw_format;  /* "sc16" (default) or "sc8" */
 extern int    usrp_gain_val;
 extern int   vita49_enabled;
 extern char *vita49_endpoint;

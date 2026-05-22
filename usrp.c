@@ -180,11 +180,15 @@ void *usrp_stream_thread(void *arg)
     uhd_rx_streamer_handle rx;
     uhd_rx_metadata_handle md;
     size_t channel = 0, max_samples, rx_samples;
-    /* sc16 on the wire preserves the 12-bit ADC; fc32 on the CPU side
-     * matches the float path used by other backends. */
+    /* Wire format: sc16 (default, 4 B/sample, preserves full 12-bit
+     * ADC) or sc8 (2 B/sample, halves USB bandwidth on B-series at the
+     * cost of 4 LSBs -- fine for LoRa decode). CPU-side stays fc32 to
+     * match the float path the other backends feed into. */
+    const char *otw = (opt_usrp_otw_format && opt_usrp_otw_format[0])
+                      ? opt_usrp_otw_format : "sc16";
     uhd_stream_args_t stream_args = {
         .cpu_format = "fc32",
-        .otw_format = "sc16",
+        .otw_format = (char *)otw,
         .args = "",
         .channel_list = &channel,
         .n_channels = 1,
