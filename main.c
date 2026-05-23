@@ -1591,6 +1591,359 @@ int run_selftest_rejection_amplitude(void)
     return 0;
 }
 
+/* ---- Two-tone adjacent-channel test --------------------------------
+ *
+ * Strong tone in channel A, weak tone in adjacent channel B, both fed
+ * through the cs8 ingest. Measures B's recovered bin power with and
+ * without A present. If the channelizer is linear (it is, by
+ * construction) the two numbers match: A leaks into B at the
+ * structural ACR floor, far below B's own power, so B's bin reading
+ * is unchanged.
+ *
+ * If field operators see close-range desense and this test shows no
+ * software desense, the conclusion the README already states is
+ * confirmed: the desense is in the SDR front end, not our processing.
+ */
+
+static int run_one_tone_pair(uint64_t f_center, uint32_t fs, int bw_hz,
+                             int n_fit, const int *fit,
+                             int target_idx /* index into fit[] */,
+                             uint64_t f_strong, double amp_strong,
+                             uint64_t f_weak,   double amp_weak,
+                             double *out_target_dbfs)
+{
+    channelizer_t *c = channelizer_create(f_center, fs);
+    if (!c) return -1;
+    chan_stats_t *stats = calloc((size_t)n_fit, sizeof(*stats));
+    if (!stats) { channelizer_destroy(c); return -1; }
+    for (int k = 0; k < n_fit; ++k) {
+        channel_cfg_t cfg = {
+            .f_hz = mesh_channel_freq_hz(mesh_lookup_region(opt_region ? opt_region : "US"),
+                                          bw_hz, fit[k]),
+            .bw_hz = bw_hz, .sf = 7, .cr = 5,
+            .on_baseband = selftest_cb, .user = stats,
+        };
+        channelizer_add_channel(c, &cfg);
+    }
+    double phase_a = 0.0, phase_b = 0.0;
+    double inc_a = 2.0 * M_PI * (double)((int64_t)f_strong - (int64_t)f_center) / (double)fs;
+    double inc_b = 2.0 * M_PI * (double)((int64_t)f_weak   - (int64_t)f_center) / (double)fs;
+    size_t total_samples = fs / 10;
+    const size_t block = 65536;
+    int8_t *buf = malloc(block * 2);
+    if (!buf) { channelizer_destroy(c); free(stats); return -1; }
+    for (size_t fed = 0; fed < total_samples; ) {
+        size_t n = total_samples - fed; if (n > block) n = block;
+        for (size_t i = 0; i < n; ++i) {
+            double ci = cos(phase_a) * amp_strong + cos(phase_b) * amp_weak;
+            double si = sin(phase_a) * amp_strong + sin(phase_b) * amp_weak;
+            if (ci >  127.0) ci =  127.0; else if (ci < -128.0) ci = -128.0;
+            if (si >  127.0) si =  127.0; else if (si < -128.0) si = -128.0;
+            buf[2*i]     = (int8_t)ci;
+            buf[2*i + 1] = (int8_t)si;
+            phase_a += inc_a;
+            phase_b += inc_b;
+        }
+        channelizer_process_int8(c, buf, n);
+        fed += n;
+    }
+    free(buf);
+    double avg = stats[target_idx].nsamples
+        ? stats[target_idx].power_sum / (double)stats[target_idx].nsamples
+        : 0.0;
+    *out_target_dbfs = avg > 0.0 ? 10.0 * log10(avg) : -200.0;
+    channelizer_destroy(c);
+    free(stats);
+    return 0;
+}
+
+int run_selftest_rejection_twotone(void)
+{
+    const char *region_name = opt_region ? opt_region : "US";
+    const mesh_region_t *r = mesh_lookup_region(region_name);
+    if (!r) {
+        fprintf(stderr, "selftest-rejection-twotone: unknown region '%s'\n", region_name);
+        return 1;
+    }
+    uint32_t fs = samp_rate > 0.0 ? (uint32_t)samp_rate : 20000000u;
+    uint64_t f_center = center_freq > 0.0
+        ? (uint64_t)center_freq
+        : (uint64_t)((r->f_lo_mhz + r->f_hi_mhz) * 0.5 * 1e6);
+
+    int bw_set[8] = {0}; int n_bw = 0;
+    for (int p = 0; p < MESH_PRESET_COUNT; ++p) {
+        int bw = r->wide_lora ? MESH_PRESETS[p].bw_hz_wide
+                              : MESH_PRESETS[p].bw_hz_narrow;
+        int seen = 0;
+        for (int i = 0; i < n_bw; ++i) if (bw_set[i] == bw) { seen = 1; break; }
+        if (!seen && n_bw < (int)(sizeof(bw_set)/sizeof(bw_set[0])))
+            bw_set[n_bw++] = bw;
+    }
+    for (int i = 0; i < n_bw; ++i)
+        for (int j = i + 1; j < n_bw; ++j)
+            if (bw_set[j] < bw_set[i]) { int t = bw_set[i]; bw_set[i] = bw_set[j]; bw_set[j] = t; }
+
+    /* Strong-tone amplitudes to sweep (dBFS). Weak fixed at -20 dBFS so
+     * it clears the cs8 quantization floor (~28 dB worst ACR at -20 dBFS
+     * per the amplitude sweep) but stays well below the strong tone. */
+    static const double strong_dbfs[] = { -20.0, -10.0, -3.0, -0.1 };
+    const int n_strong = (int)(sizeof(strong_dbfs) / sizeof(strong_dbfs[0]));
+    const double weak_dbfs = -20.0;
+    const double weak_amp = pow(10.0, weak_dbfs / 20.0) * 127.0;
+
+    char ts[32], csvpath[256];
+    time_t now = time(NULL); struct tm tmv; gmtime_r(&now, &tmv);
+    strftime(ts, sizeof(ts), "%Y%m%dT%H%M%SZ", &tmv);
+    snprintf(csvpath, sizeof(csvpath),
+             "/tmp/meshtastic-pfb-rejection-twotone-%s.csv", ts);
+    FILE *csv = fopen(csvpath, "w");
+    if (!csv) {
+        fprintf(stderr, "selftest-rejection-twotone: cannot open %s: %s\n",
+                csvpath, strerror(errno));
+        return 1;
+    }
+    fprintf(csv,
+            "rate_hz,bw_hz,strong_ch,strong_dbfs,weak_ch,weak_dbfs,"
+            "weak_power_alone_dbfs,weak_power_with_strong_dbfs,desense_db\n");
+    fprintf(stderr,
+            "selftest-rejection-twotone: region=%s center=%.3f MHz rate=%u sps\n"
+            "selftest-rejection-twotone: writing %s\n",
+            r->name, f_center / 1e6, fs, csvpath);
+
+    double rf_lo = (double)f_center - 0.5 * (double)fs;
+    double rf_hi = (double)f_center + 0.5 * (double)fs;
+    double max_abs_desense = 0.0;
+
+    for (int g = 0; g < n_bw; ++g) {
+        int bw_hz = bw_set[g];
+        if (fs % (uint32_t)bw_hz != 0) continue;
+        int n_slots = mesh_channel_count(r, bw_hz);
+        int *fit = malloc(sizeof(int) * (size_t)(n_slots > 0 ? n_slots : 1));
+        if (!fit) { fclose(csv); return 1; }
+        int n_fit = 0;
+        for (int s = 0; s < n_slots; ++s) {
+            double f = (double)mesh_channel_freq_hz(r, bw_hz, s);
+            if (f >= rf_lo && f <= rf_hi) fit[n_fit++] = s;
+        }
+        if (n_fit < 2) { free(fit); continue; }
+
+        /* Strong = middle of window, weak = strong+1. */
+        int strong_idx = n_fit / 2;
+        int weak_idx   = strong_idx + 1;
+        if (weak_idx >= n_fit) weak_idx = strong_idx - 1;
+        int strong_slot = fit[strong_idx];
+        int weak_slot   = fit[weak_idx];
+        uint64_t f_strong = mesh_channel_freq_hz(r, bw_hz, strong_slot);
+        uint64_t f_weak   = mesh_channel_freq_hz(r, bw_hz, weak_slot);
+
+        fprintf(stderr,
+                "selftest-rejection-twotone:  BW=%d kHz strong=slot%d weak=slot%d\n",
+                bw_hz / 1000, strong_slot, weak_slot);
+
+        for (int a = 0; a < n_strong; ++a) {
+            double amp_strong = pow(10.0, strong_dbfs[a] / 20.0) * 127.0;
+
+            /* Baseline: weak tone only. */
+            double weak_alone_dbfs = -200.0;
+            if (run_one_tone_pair(f_center, fs, bw_hz, n_fit, fit, weak_idx,
+                                   f_strong, 0.0, f_weak, weak_amp,
+                                   &weak_alone_dbfs) < 0) {
+                fclose(csv); free(fit); return 1;
+            }
+            /* With strong tone present. */
+            double weak_with_strong_dbfs = -200.0;
+            if (run_one_tone_pair(f_center, fs, bw_hz, n_fit, fit, weak_idx,
+                                   f_strong, amp_strong, f_weak, weak_amp,
+                                   &weak_with_strong_dbfs) < 0) {
+                fclose(csv); free(fit); return 1;
+            }
+            double desense = weak_with_strong_dbfs - weak_alone_dbfs;
+            fprintf(csv, "%u,%d,%d,%+.3f,%d,%+.3f,%.3f,%.3f,%+.3f\n",
+                    fs, bw_hz, strong_slot, strong_dbfs[a],
+                    weak_slot, weak_dbfs,
+                    weak_alone_dbfs, weak_with_strong_dbfs, desense);
+            if (fabs(desense) > max_abs_desense) max_abs_desense = fabs(desense);
+            fprintf(stderr,
+                    "  strong=%+5.1f dBFS:  weak alone %.2f dB,  weak+strong %.2f dB,  desense %+5.2f dB\n",
+                    strong_dbfs[a], weak_alone_dbfs, weak_with_strong_dbfs, desense);
+        }
+        free(fit);
+    }
+    fclose(csv);
+
+    fprintf(stderr,
+            "selftest-rejection-twotone: max |desense| = %.2f dB\n"
+            "  shape: %s\n"
+            "  CSV: %s\n",
+            max_abs_desense,
+            max_abs_desense < 1.0
+                ? "no software desense observed; field desense (if any) is SDR front-end side"
+                : "non-zero software desense; inspect CSV",
+            csvpath);
+    return 0;
+}
+
+/* ---- Off-bin tone leakage -----------------------------------------
+ *
+ * Real-world emitters drift off the integer-bin grid (crystal tolerance,
+ * temperature, doppler). For each bandwidth group, inject a tone at
+ * (source_ch_center + delta*bw) for delta in {0, 1/8, 1/4, 3/8, 1/2}
+ * and record how the energy spreads across nearby output bins.
+ *
+ * Informs the off-grid scanner's bandwidth-estimator thresholds:
+ * a tone at exactly half a bin off-center splits its energy between
+ * two grid bins, so an off-grid emitter never sits cleanly in one
+ * channel even if the scanner placed a sink at the right BW.
+ */
+
+int run_selftest_rejection_offbin(void)
+{
+    const char *region_name = opt_region ? opt_region : "US";
+    const mesh_region_t *r = mesh_lookup_region(region_name);
+    if (!r) {
+        fprintf(stderr, "selftest-rejection-offbin: unknown region '%s'\n", region_name);
+        return 1;
+    }
+    uint32_t fs = samp_rate > 0.0 ? (uint32_t)samp_rate : 20000000u;
+    uint64_t f_center = center_freq > 0.0
+        ? (uint64_t)center_freq
+        : (uint64_t)((r->f_lo_mhz + r->f_hi_mhz) * 0.5 * 1e6);
+
+    int bw_set[8] = {0}; int n_bw = 0;
+    for (int p = 0; p < MESH_PRESET_COUNT; ++p) {
+        int bw = r->wide_lora ? MESH_PRESETS[p].bw_hz_wide
+                              : MESH_PRESETS[p].bw_hz_narrow;
+        int seen = 0;
+        for (int i = 0; i < n_bw; ++i) if (bw_set[i] == bw) { seen = 1; break; }
+        if (!seen && n_bw < (int)(sizeof(bw_set)/sizeof(bw_set[0])))
+            bw_set[n_bw++] = bw;
+    }
+    for (int i = 0; i < n_bw; ++i)
+        for (int j = i + 1; j < n_bw; ++j)
+            if (bw_set[j] < bw_set[i]) { int t = bw_set[i]; bw_set[i] = bw_set[j]; bw_set[j] = t; }
+
+    static const double offset_frac[] = { 0.0, 0.125, 0.25, 0.375, 0.5 };
+    const int n_off = (int)(sizeof(offset_frac) / sizeof(offset_frac[0]));
+
+    char ts[32], csvpath[256];
+    time_t now = time(NULL); struct tm tmv; gmtime_r(&now, &tmv);
+    strftime(ts, sizeof(ts), "%Y%m%dT%H%M%SZ", &tmv);
+    snprintf(csvpath, sizeof(csvpath),
+             "/tmp/meshtastic-pfb-rejection-offbin-%s.csv", ts);
+    FILE *csv = fopen(csvpath, "w");
+    if (!csv) {
+        fprintf(stderr, "selftest-rejection-offbin: cannot open %s: %s\n",
+                csvpath, strerror(errno));
+        return 1;
+    }
+    fprintf(csv,
+            "rate_hz,bw_hz,source_ch,source_offset_bw_fraction,leak_ch_offset,power_dbfs,relative_db\n");
+    fprintf(stderr,
+            "selftest-rejection-offbin: region=%s center=%.3f MHz rate=%u sps\n"
+            "selftest-rejection-offbin: writing %s\n",
+            r->name, f_center / 1e6, fs, csvpath);
+
+    /* Show a small leak-offset window around the source. */
+    const int leak_window = 2; /* -2..+2 */
+
+    double rf_lo = (double)f_center - 0.5 * (double)fs;
+    double rf_hi = (double)f_center + 0.5 * (double)fs;
+
+    for (int g = 0; g < n_bw; ++g) {
+        int bw_hz = bw_set[g];
+        if (fs % (uint32_t)bw_hz != 0) continue;
+        int n_slots = mesh_channel_count(r, bw_hz);
+        int *fit = malloc(sizeof(int) * (size_t)(n_slots > 0 ? n_slots : 1));
+        if (!fit) { fclose(csv); return 1; }
+        int n_fit = 0;
+        for (int s = 0; s < n_slots; ++s) {
+            double f = (double)mesh_channel_freq_hz(r, bw_hz, s);
+            if (f >= rf_lo && f <= rf_hi) fit[n_fit++] = s;
+        }
+        if (n_fit < 1 + 2 * leak_window) { free(fit); continue; }
+
+        int src_idx  = n_fit / 2;
+        int src_slot = fit[src_idx];
+
+        fprintf(stderr,
+                "selftest-rejection-offbin:  BW=%d kHz source=slot%d\n",
+                bw_hz / 1000, src_slot);
+
+        for (int o = 0; o < n_off; ++o) {
+            double f_tone = (double)mesh_channel_freq_hz(r, bw_hz, src_slot)
+                          + offset_frac[o] * (double)bw_hz;
+
+            channelizer_t *c = channelizer_create(f_center, fs);
+            if (!c) { free(fit); fclose(csv); return 1; }
+            chan_stats_t *stats = calloc((size_t)n_fit, sizeof(*stats));
+            if (!stats) { channelizer_destroy(c); free(fit); fclose(csv); return 1; }
+            for (int k = 0; k < n_fit; ++k) {
+                channel_cfg_t cfg = {
+                    .f_hz = mesh_channel_freq_hz(r, bw_hz, fit[k]),
+                    .bw_hz = bw_hz, .sf = 7, .cr = 5,
+                    .on_baseband = selftest_cb, .user = stats,
+                };
+                channelizer_add_channel(c, &cfg);
+            }
+            double phase = 0.0;
+            double phase_inc = 2.0 * M_PI * (f_tone - (double)f_center) / (double)fs;
+            const double amp = pow(10.0, -3.0 / 20.0) * 127.0;  /* -3 dBFS */
+            size_t total_samples = fs / 10;
+            const size_t block = 65536;
+            int8_t *buf = malloc(block * 2);
+            if (!buf) { channelizer_destroy(c); free(stats); free(fit); fclose(csv); return 1; }
+            for (size_t fed = 0; fed < total_samples; ) {
+                size_t n = total_samples - fed; if (n > block) n = block;
+                for (size_t i = 0; i < n; ++i) {
+                    double ci = cos(phase) * amp;
+                    double si = sin(phase) * amp;
+                    if (ci >  127.0) ci =  127.0; else if (ci < -128.0) ci = -128.0;
+                    if (si >  127.0) si =  127.0; else if (si < -128.0) si = -128.0;
+                    buf[2*i]     = (int8_t)ci;
+                    buf[2*i + 1] = (int8_t)si;
+                    phase += phase_inc;
+                }
+                channelizer_process_int8(c, buf, n);
+                fed += n;
+            }
+            free(buf);
+
+            /* Find the peak bin in this run for relative-power reference. */
+            double max_db = -200.0;
+            for (int k = 0; k < n_fit; ++k) {
+                double avg = stats[k].nsamples
+                    ? stats[k].power_sum / (double)stats[k].nsamples
+                    : 0.0;
+                double db = avg > 0.0 ? 10.0 * log10(avg) : -200.0;
+                if (db > max_db) max_db = db;
+            }
+            for (int leak_off = -leak_window; leak_off <= leak_window; ++leak_off) {
+                int k = src_idx + leak_off;
+                if (k < 0 || k >= n_fit) continue;
+                double avg = stats[k].nsamples
+                    ? stats[k].power_sum / (double)stats[k].nsamples
+                    : 0.0;
+                double db = avg > 0.0 ? 10.0 * log10(avg) : -200.0;
+                double rel = db - max_db;
+                fprintf(csv, "%u,%d,%d,%.4f,%+d,%.3f,%+.3f\n",
+                        fs, bw_hz, src_slot, offset_frac[o], leak_off, db, rel);
+            }
+            channelizer_destroy(c);
+            free(stats);
+        }
+        free(fit);
+    }
+    fclose(csv);
+    fprintf(stderr,
+            "selftest-rejection-offbin: at half-bin offset (delta=0.5*BW), the source's energy\n"
+            "  appears equally in two adjacent grid bins; an off-grid emitter halfway between\n"
+            "  channel centers therefore lights up two channels simultaneously, not one.\n"
+            "  Inspect the CSV for absolute and relative power at each (offset, leak_offset)\n"
+            "  point and tune scanner thresholds accordingly.\n"
+            "  CSV: %s\n", csvpath);
+    return 0;
+}
+
 /* ---- AES + multi-key + protobuf end-to-end self-test ---- */
 
 typedef struct {
@@ -1969,7 +2322,7 @@ int main(int argc, char **argv)
 
     int rc = options_parse(argc, argv);
     if (rc == 1) return 0;        /* --help */
-    if (rc >= 2 && rc != 100 && rc != 101 && rc != 102) return rc;
+    if (rc >= 2 && rc != 100 && rc != 101 && rc != 102 && rc != 103 && rc != 104) return rc;
 
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
@@ -1991,6 +2344,14 @@ int main(int argc, char **argv)
     if (rc == 102) {              /* --selftest-rejection-amplitude */
         extern int run_selftest_rejection_amplitude(void);
         return run_selftest_rejection_amplitude();
+    }
+    if (rc == 103) {              /* --selftest-rejection-twotone */
+        extern int run_selftest_rejection_twotone(void);
+        return run_selftest_rejection_twotone();
+    }
+    if (rc == 104) {              /* --selftest-rejection-offbin */
+        extern int run_selftest_rejection_offbin(void);
+        return run_selftest_rejection_offbin();
     }
 
     fprintf(stderr,

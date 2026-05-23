@@ -244,6 +244,10 @@ void options_print_help(const char *prog)
         "  --selftest-rejection   measure channelizer ACR across the grid; CSV to /tmp/meshtastic-pfb-rejection-<ts>.csv\n"
         "  --selftest-rejection-amplitude\n"
         "                         sweep ACR vs source amplitude {-40,-20,-10,-3,-0.1} dBFS; CSV to /tmp\n"
+        "  --selftest-rejection-twotone\n"
+        "                         strong tone in A + weak tone in B; measure B's recovered power with/without A; CSV to /tmp\n"
+        "  --selftest-rejection-offbin\n"
+        "                         sweep tone offset from channel center in fractional-bin steps; CSV to /tmp\n"
         "  --list                 enumerate all available SDR devices and exit\n"
         "  --schema               print JSON Schema for the event format and exit\n"
         "  -v, --verbose          INFO+WARN diagnostics (-vv DEBUG, -vvv TRACE)\n"
@@ -305,6 +309,7 @@ int options_parse(int argc, char **argv)
         O_HACKRF_LNA, O_HACKRF_VGA, O_HACKRF_AMP, O_HACKRF_AMP_OFF, O_USRP_OTW,
         O_DECODE, O_SCAN, O_SCAN_DEC, O_ALERT_OFF_GRID,
         O_SIMD_GEN, O_SELFTEST, O_SELFTEST_REJECTION, O_SELFTEST_REJECTION_AMP,
+        O_SELFTEST_REJECTION_TWOTONE, O_SELFTEST_REJECTION_OFFBIN,
         O_LIST, O_SCHEMA,
     };
     static const struct option longopts[] = {
@@ -364,6 +369,8 @@ int options_parse(int argc, char **argv)
         { "selftest",   no_argument,       NULL, O_SELFTEST },
         { "selftest-rejection", no_argument, NULL, O_SELFTEST_REJECTION },
         { "selftest-rejection-amplitude", no_argument, NULL, O_SELFTEST_REJECTION_AMP },
+        { "selftest-rejection-twotone",   no_argument, NULL, O_SELFTEST_REJECTION_TWOTONE },
+        { "selftest-rejection-offbin",    no_argument, NULL, O_SELFTEST_REJECTION_OFFBIN },
         { "list",       no_argument,       NULL, O_LIST },
         { "schema",     no_argument,       NULL, O_SCHEMA },
         { "help",       no_argument,       NULL, 'h' },
@@ -514,6 +521,8 @@ int options_parse(int argc, char **argv)
         case O_SELFTEST: return 100;
         case O_SELFTEST_REJECTION: return 101;
         case O_SELFTEST_REJECTION_AMP: return 102;
+        case O_SELFTEST_REJECTION_TWOTONE: return 103;
+        case O_SELFTEST_REJECTION_OFFBIN: return 104;
         case O_LIST:     opt_list_devices = true; break;
         case O_SCHEMA:   opt_print_schema = true; break;
 

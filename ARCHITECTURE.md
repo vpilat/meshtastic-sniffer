@@ -149,6 +149,10 @@ Worst-case ACR vs source amplitude (`--selftest-rejection-amplitude`, US grid, c
 
 Monotonically rising; consistent with the cs8 ingest's quantization floor setting the measurement ceiling at low input. The channelizer's structural rejection becomes visible once the tone clears that floor, converging on the `--selftest-rejection` full-amp number (~50 dB) by -3 dBFS.
 
+Two-tone test (`--selftest-rejection-twotone`, strong tone in slot N, weak tone at -20 dBFS in slot N+1, strong swept across -20..-0.1 dBFS): max |desense| of weak-bin power was **0.56 dB** — measurement noise. The channelizer doesn't generate software-side adjacent-channel desense. Any close-range desense observed in the field is therefore SDR front-end (mixer overload), not our processing.
+
+Off-bin sweep (`--selftest-rejection-offbin`, tone at source+δ*BW for δ ∈ {0, 1/8, 1/4, 3/8, 1/2}): at δ=0.5 the energy distributes equally between source bin and source+1 bin (both at ~-9 dBFS while a single on-bin tone peaks at ~-3 dBFS), with non-adjacent bins ≤ -63 dB. Practical consequence: an emitter drifted to the half-bin point between channel centers lights up both adjacent grid channels simultaneously. The off-grid scanner thresholds should expect this split.
+
 ### Async sink dispatch
 
 The PFB writes FFT outputs into per-sink ring buffers (`SINK_RING_N = 4`, 1024 samples each). When a buffer fills, ownership passes to a worker in a shared pool sharded by `channel_id % n_workers` (default `min(nproc-1, 16)`). Each LoRa decoder is touched by exactly one worker, so per-channel state stays single-threaded without locks. The PFB thread blocks on a full free pool rather than dropping samples; this is the only backpressure path in the pipeline.
