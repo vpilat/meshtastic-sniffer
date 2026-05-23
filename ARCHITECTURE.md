@@ -137,6 +137,18 @@ Reproduce: `./meshtastic-sniffer --selftest-rejection` (override `--region=` / `
 
 The 49.94 dB worst-case is the system's actual adjacent-channel floor — measured end-to-end through the cs8 ingest path, polyphase FIR, FFT, and bin dispatch — not an asymptotic window property. Real-world leakage will additionally include SDR front-end and quantization contributions outside the channelizer.
 
+Worst-case ACR vs source amplitude (`--selftest-rejection-amplitude`, US grid, cs8 ingest):
+
+| amplitude (dBFS) | worst ACR (dB) |
+|---|---|
+| -40.0 |  4.15 |
+| -20.0 | 28.70 |
+| -10.0 | 41.19 |
+|  -3.0 | 47.34 |
+|  -0.1 | 49.65 |
+
+Monotonically rising; consistent with the cs8 ingest's quantization floor setting the measurement ceiling at low input. The channelizer's structural rejection becomes visible once the tone clears that floor, converging on the `--selftest-rejection` full-amp number (~50 dB) by -3 dBFS.
+
 ### Async sink dispatch
 
 The PFB writes FFT outputs into per-sink ring buffers (`SINK_RING_N = 4`, 1024 samples each). When a buffer fills, ownership passes to a worker in a shared pool sharded by `channel_id % n_workers` (default `min(nproc-1, 16)`). Each LoRa decoder is touched by exactly one worker, so per-channel state stays single-threaded without locks. The PFB thread blocks on a full free pool rather than dropping samples; this is the only backpressure path in the pipeline.

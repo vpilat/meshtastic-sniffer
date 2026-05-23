@@ -1366,6 +1366,231 @@ int run_selftest_rejection(void)
     return 0;
 }
 
+/* ---- Channelizer ACR vs source amplitude sweep ------------------------
+ *
+ * Same per-(BW, source) sweep as run_selftest_rejection, but each source
+ * position is exercised at multiple input amplitudes. The FIR + FFT path
+ * is linear by construction, so what this test actually surfaces is
+ * where the cs8 ingest's quantization noise floor sits relative to the
+ * source tone: at low amplitudes the leak bins are dominated by that
+ * floor and ACR appears small; once the tone is well above the floor
+ * the measured ACR converges on the channelizer's structural value
+ * (matching run_selftest_rejection's full-amp result).
+ *
+ * Useful for documenting where the cs8 path's measurement floor lies,
+ * not for proving "linearity" -- linearity is a property of the code,
+ * already true.
+ */
+
+static int double_cmp(const void *a, const void *b)
+{
+    double da = *(const double *)a, db = *(const double *)b;
+    return (da < db) ? -1 : (da > db) ? 1 : 0;
+}
+
+int run_selftest_rejection_amplitude(void)
+{
+    const char *region_name = opt_region ? opt_region : "US";
+    const mesh_region_t *r = mesh_lookup_region(region_name);
+    if (!r) {
+        fprintf(stderr, "selftest-rejection-amp: unknown region '%s'\n", region_name);
+        return 1;
+    }
+    uint32_t fs = samp_rate > 0.0 ? (uint32_t)samp_rate : 20000000u;
+    uint64_t f_center = center_freq > 0.0
+        ? (uint64_t)center_freq
+        : (uint64_t)((r->f_lo_mhz + r->f_hi_mhz) * 0.5 * 1e6);
+
+    /* Amplitude set chosen per the test plan; dBFS referenced to int8 peak ±127. */
+    static const double amps_dbfs[] = { -40.0, -20.0, -10.0, -3.0, -0.1 };
+    const int n_amps = (int)(sizeof(amps_dbfs) / sizeof(amps_dbfs[0]));
+
+    int bw_set[8] = {0}; int n_bw = 0;
+    for (int p = 0; p < MESH_PRESET_COUNT; ++p) {
+        int bw = r->wide_lora ? MESH_PRESETS[p].bw_hz_wide
+                              : MESH_PRESETS[p].bw_hz_narrow;
+        int seen = 0;
+        for (int i = 0; i < n_bw; ++i) if (bw_set[i] == bw) { seen = 1; break; }
+        if (!seen && n_bw < (int)(sizeof(bw_set)/sizeof(bw_set[0])))
+            bw_set[n_bw++] = bw;
+    }
+    for (int i = 0; i < n_bw; ++i)
+        for (int j = i + 1; j < n_bw; ++j)
+            if (bw_set[j] < bw_set[i]) { int t = bw_set[i]; bw_set[i] = bw_set[j]; bw_set[j] = t; }
+
+    char ts[32], csvpath[256];
+    time_t now = time(NULL); struct tm tmv; gmtime_r(&now, &tmv);
+    strftime(ts, sizeof(ts), "%Y%m%dT%H%M%SZ", &tmv);
+    snprintf(csvpath, sizeof(csvpath),
+             "/tmp/meshtastic-pfb-rejection-amplitude-%s.csv", ts);
+    FILE *csv = fopen(csvpath, "w");
+    if (!csv) {
+        fprintf(stderr, "selftest-rejection-amp: cannot open %s: %s\n",
+                csvpath, strerror(errno));
+        return 1;
+    }
+    fprintf(csv,
+            "rate_hz,bw_hz,source_ch,amplitude_dbfs,target_dbfs,"
+            "median_other_dbfs,worst_other_dbfs,worst_relative_db\n");
+
+    fprintf(stderr,
+            "selftest-rejection-amp: region=%s center=%.3f MHz rate=%u sps\n"
+            "selftest-rejection-amp: amplitudes (dBFS): ", r->name, f_center / 1e6, fs);
+    for (int a = 0; a < n_amps; ++a) fprintf(stderr, "%+.1f%s", amps_dbfs[a], a + 1 < n_amps ? ", " : "");
+    fprintf(stderr, "\nselftest-rejection-amp: writing %s\n", csvpath);
+
+    /* Per-amplitude worst-relative tracker for the summary. */
+    double *worst_rel_at_amp = calloc((size_t)n_amps, sizeof(double));
+    for (int a = 0; a < n_amps; ++a) worst_rel_at_amp[a] = 1e9; /* init to "no measurement" */
+
+    double rf_lo = (double)f_center - 0.5 * (double)fs;
+    double rf_hi = (double)f_center + 0.5 * (double)fs;
+
+    for (int g = 0; g < n_bw; ++g) {
+        int bw_hz = bw_set[g];
+        if (fs % (uint32_t)bw_hz != 0) continue;
+
+        int n_slots = mesh_channel_count(r, bw_hz);
+        int *fit = malloc(sizeof(int) * (size_t)(n_slots > 0 ? n_slots : 1));
+        if (!fit) { fclose(csv); free(worst_rel_at_amp); return 1; }
+        int n_fit = 0;
+        for (int s = 0; s < n_slots; ++s) {
+            double f = (double)mesh_channel_freq_hz(r, bw_hz, s);
+            if (f >= rf_lo && f <= rf_hi) fit[n_fit++] = s;
+        }
+        if (n_fit < 2) { free(fit); continue; }
+        int M = (int)(fs / (uint32_t)bw_hz);
+        fprintf(stderr,
+                "selftest-rejection-amp:  BW=%d kHz  M=%d  %d slots in window\n",
+                bw_hz / 1000, M, n_fit);
+
+        double *other_db = malloc(sizeof(double) * (size_t)n_fit);
+        if (!other_db) { free(fit); fclose(csv); free(worst_rel_at_amp); return 1; }
+
+        for (int a = 0; a < n_amps; ++a) {
+            double amp_int = pow(10.0, amps_dbfs[a] / 20.0) * 127.0;
+
+            for (int src_idx = 0; src_idx < n_fit; ++src_idx) {
+                int src_slot = fit[src_idx];
+                uint64_t f_tone = mesh_channel_freq_hz(r, bw_hz, src_slot);
+
+                channelizer_t *c = channelizer_create(f_center, fs);
+                if (!c) { free(other_db); free(fit); fclose(csv); free(worst_rel_at_amp); return 1; }
+
+                chan_stats_t *stats = calloc((size_t)n_fit, sizeof(*stats));
+                if (!stats) { channelizer_destroy(c); free(other_db); free(fit); fclose(csv); free(worst_rel_at_amp); return 1; }
+
+                for (int k = 0; k < n_fit; ++k) {
+                    channel_cfg_t cfg = {
+                        .f_hz = mesh_channel_freq_hz(r, bw_hz, fit[k]),
+                        .bw_hz = bw_hz, .sf = 7, .cr = 5,
+                        .on_baseband = selftest_cb, .user = stats,
+                    };
+                    channelizer_add_channel(c, &cfg);
+                }
+
+                double phase_inc = 2.0 * M_PI
+                    * (double)((int64_t)f_tone - (int64_t)f_center) / (double)fs;
+                size_t total_samples = fs / 10;
+                const size_t block = 65536;
+                int8_t *buf = malloc(block * 2);
+                if (!buf) { channelizer_destroy(c); free(stats); free(other_db); free(fit); fclose(csv); free(worst_rel_at_amp); return 1; }
+                double phase = 0.0;
+                for (size_t fed = 0; fed < total_samples; ) {
+                    size_t n = total_samples - fed;
+                    if (n > block) n = block;
+                    for (size_t i = 0; i < n; ++i) {
+                        double ci = cos(phase) * amp_int;
+                        double si = sin(phase) * amp_int;
+                        /* Clamp to int8 range (only relevant at -0.1 dBFS edge cases). */
+                        if (ci >  127.0) ci =  127.0; else if (ci < -128.0) ci = -128.0;
+                        if (si >  127.0) si =  127.0; else if (si < -128.0) si = -128.0;
+                        buf[2*i]     = (int8_t)ci;
+                        buf[2*i + 1] = (int8_t)si;
+                        phase += phase_inc;
+                    }
+                    channelizer_process_int8(c, buf, n);
+                    fed += n;
+                }
+                free(buf);
+
+                double target_avg = stats[src_idx].nsamples
+                    ? stats[src_idx].power_sum / (double)stats[src_idx].nsamples
+                    : 0.0;
+                double target_db = target_avg > 0.0 ? 10.0 * log10(target_avg) : -200.0;
+
+                int n_other = 0;
+                for (int k = 0; k < n_fit; ++k) {
+                    if (k == src_idx) continue;
+                    double avg = stats[k].nsamples
+                        ? stats[k].power_sum / (double)stats[k].nsamples
+                        : 0.0;
+                    other_db[n_other++] = avg > 0.0 ? 10.0 * log10(avg) : -200.0;
+                }
+                /* qsort ascending: median at middle, worst (largest leak) at end. */
+                qsort(other_db, (size_t)n_other, sizeof(double), double_cmp);
+                double median_other = other_db[n_other / 2];
+                double worst_other  = other_db[n_other - 1];
+                double worst_rel    = target_db - worst_other;
+
+                fprintf(csv, "%u,%d,%d,%+.3f,%.3f,%.3f,%.3f,%.3f\n",
+                        fs, bw_hz, src_slot, amps_dbfs[a],
+                        target_db, median_other, worst_other, worst_rel);
+
+                if (worst_rel < worst_rel_at_amp[a])
+                    worst_rel_at_amp[a] = worst_rel;
+
+                channelizer_destroy(c);
+                free(stats);
+            }
+        }
+        free(other_db);
+        free(fit);
+    }
+    fclose(csv);
+
+    fprintf(stderr, "selftest-rejection-amp: worst relative rejection by amplitude:\n");
+    int valid = 0;
+    double min_rel = 1e9, max_rel = -1e9;
+    for (int a = 0; a < n_amps; ++a) {
+        if (worst_rel_at_amp[a] >= 1e9) {
+            fprintf(stderr, "  %+6.1f dBFS:  (no data)\n", amps_dbfs[a]);
+            continue;
+        }
+        fprintf(stderr, "  %+6.1f dBFS: %7.2f dB\n", amps_dbfs[a], worst_rel_at_amp[a]);
+        if (worst_rel_at_amp[a] < min_rel) min_rel = worst_rel_at_amp[a];
+        if (worst_rel_at_amp[a] > max_rel) max_rel = worst_rel_at_amp[a];
+        valid++;
+    }
+    if (valid >= 2) {
+        double spread = max_rel - min_rel;
+        int monotonic_rising = 1;
+        for (int a = 1; a < n_amps; ++a) {
+            if (worst_rel_at_amp[a] >= 1e9 || worst_rel_at_amp[a-1] >= 1e9) continue;
+            if (worst_rel_at_amp[a] < worst_rel_at_amp[a-1] - 0.5) { monotonic_rising = 0; break; }
+        }
+        fprintf(stderr,
+                "selftest-rejection-amp: spread of worst-case ACR across amplitudes = %.2f dB\n",
+                spread);
+        if (spread < 1.0)
+            fprintf(stderr, "  shape: flat across the amplitude range\n");
+        else if (monotonic_rising)
+            fprintf(stderr,
+                    "  shape: worst-case ACR rises monotonically with input amplitude --\n"
+                    "         consistent with the cs8 ingest's quantization floor setting the\n"
+                    "         measurement ceiling at low dBFS; the channelizer's structural\n"
+                    "         rejection becomes visible once the tone clears the floor.\n");
+        else
+            fprintf(stderr,
+                    "  shape: non-monotonic by %.2f dB across the range; inspect the CSV\n",
+                    spread);
+    }
+    fprintf(stderr, "selftest-rejection-amp: CSV: %s\n", csvpath);
+
+    free(worst_rel_at_amp);
+    return 0;
+}
+
 /* ---- AES + multi-key + protobuf end-to-end self-test ---- */
 
 typedef struct {
@@ -1744,7 +1969,7 @@ int main(int argc, char **argv)
 
     int rc = options_parse(argc, argv);
     if (rc == 1) return 0;        /* --help */
-    if (rc >= 2 && rc != 100 && rc != 101) return rc;
+    if (rc >= 2 && rc != 100 && rc != 101 && rc != 102) return rc;
 
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
@@ -1762,6 +1987,10 @@ int main(int argc, char **argv)
     if (rc == 101) {              /* --selftest-rejection */
         extern int run_selftest_rejection(void);
         return run_selftest_rejection();
+    }
+    if (rc == 102) {              /* --selftest-rejection-amplitude */
+        extern int run_selftest_rejection_amplitude(void);
+        return run_selftest_rejection_amplitude();
     }
 
     fprintf(stderr,
