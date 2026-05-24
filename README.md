@@ -307,6 +307,11 @@ What to look for:
 
 Worker count defaults to `min(nproc-1, 8)`; override with `MESHTASTIC_SINK_WORKERS=N`.
 
+Channelizer OpenMP fanout is enabled by default. Set
+`MESHTASTIC_CHANNELIZER_OMP=0` only for A/B testing or unusual hosts where
+the OpenMP team causes scheduling pressure; on the 16-core B205mini
+reference host, disabling it roughly halved throughput.
+
 ## Offline PSK recovery
 
 [meshtastic-recover](recover/) reads captured pcaps (`--pcap=PATH`) and a wordlist, runs the same channel-hash prefilter + AES-CTR + protobuf-shape verifier the live decoder uses, and prints any keys that successfully decrypt. OpenMP-parallel across all CPU cores. Output is `--keys-file=` compatible — feed the recovered keys back to the sniffer.

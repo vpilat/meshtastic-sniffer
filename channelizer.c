@@ -238,6 +238,21 @@ int channelizer_num_channels(const channelizer_t *c)
     return c ? c->n_channels : 0;
 }
 
+/* Channelizer OMP fanout switch. Evaluated once via the env var
+ * MESHTASTIC_CHANNELIZER_OMP (set to "0" to disable). Default ON
+ * preserves prior behavior. The pragma's num_threads() clause
+ * overrides OMP_NUM_THREADS, so the env var below is the only way
+ * to actually disable the per-call team for A/B testing. */
+static int channelizer_omp_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("MESHTASTIC_CHANNELIZER_OMP");
+        cached = (e && e[0] == '0') ? 0 : 1;
+    }
+    return cached;
+}
+
 void channelizer_process_int8(channelizer_t *c, const int8_t *iq, size_t n)
 {
     if (!c || n == 0) return;
@@ -256,15 +271,17 @@ void channelizer_process_int8(channelizer_t *c, const int8_t *iq, size_t n)
     int n_groups = c->n_groups;
     float complex *wb = c->workbuf;
 #if defined(_OPENMP)
-    /* Cap threads to actual parallel work. With ~3 BWs (= 3 PFB groups
-     * for Meshtastic), we have 3 independent units; spawning 8+ threads
-     * to fight over 3 jobs thrashes the OMP runtime and CPU. */
-    #pragma omp parallel for schedule(dynamic, 1) num_threads(n_groups > 0 ? n_groups : 1)
-#endif
-    for (int g = 0; g < n_groups; ++g) {
-        if (c->groups[g].active)
-            pfb_process(c->groups[g].pfb, wb, n);
+    if (channelizer_omp_enabled()) {
+        #pragma omp parallel for schedule(dynamic, 1) num_threads(n_groups > 0 ? n_groups : 1)
+        for (int g = 0; g < n_groups; ++g) {
+            if (c->groups[g].active)
+                pfb_process(c->groups[g].pfb, wb, n);
+        }
+        return;
     }
+#endif
+    for (int g = 0; g < n_groups; ++g)
+        if (c->groups[g].active) pfb_process(c->groups[g].pfb, wb, n);
 }
 
 void channelizer_process_float(channelizer_t *c, const float complex *iq, size_t n)
@@ -272,15 +289,20 @@ void channelizer_process_float(channelizer_t *c, const float complex *iq, size_t
     if (!c || n == 0) return;
     int n_groups = c->n_groups;
 #if defined(_OPENMP)
-    /* Cap threads to actual parallel work. With ~3 BWs (= 3 PFB groups
-     * for Meshtastic), we have 3 independent units; spawning 8+ threads
-     * to fight over 3 jobs thrashes the OMP runtime and CPU. */
-    #pragma omp parallel for schedule(dynamic, 1) num_threads(n_groups > 0 ? n_groups : 1)
-#endif
-    for (int g = 0; g < n_groups; ++g) {
-        if (c->groups[g].active)
-            pfb_process(c->groups[g].pfb, iq, n);
+    if (channelizer_omp_enabled()) {
+        /* Cap threads to actual parallel work. With ~3 BWs (= 3 PFB groups
+         * for Meshtastic), we have 3 independent units; spawning 8+ threads
+         * to fight over 3 jobs thrashes the OMP runtime and CPU. */
+        #pragma omp parallel for schedule(dynamic, 1) num_threads(n_groups > 0 ? n_groups : 1)
+        for (int g = 0; g < n_groups; ++g) {
+            if (c->groups[g].active)
+                pfb_process(c->groups[g].pfb, iq, n);
+        }
+        return;
     }
+#endif
+    for (int g = 0; g < n_groups; ++g)
+        if (c->groups[g].active) pfb_process(c->groups[g].pfb, iq, n);
 }
 
 void channelizer_flush(channelizer_t *c)
