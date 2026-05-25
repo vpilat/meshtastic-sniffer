@@ -910,7 +910,9 @@ static void state_tick(lora_decoder_t *d)
      * fractional-STO recovery that gr-lora_sdr does internally. Once
      * a preamble is locked we stick with the chosen sto_offset for the
      * rest of the frame. */
-    if (d->os_factor > 1 && (d->state == STATE_IDLE || d->state == STATE_PREAMBLE_OK)) {
+    if (d->os_factor > 1 &&
+        (d->state == STATE_IDLE ||
+         (d->state == STATE_PREAMBLE_OK && !d->preamble_locked_once))) {
         float best_peak = -1.0f;
         int   best_phase = 0;
         for (int ph = 0; ph < d->os_factor; ++ph) {
