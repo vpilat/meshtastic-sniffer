@@ -1,0 +1,230 @@
+/*
+ * meshtastic-sniffer: oversample self-test.
+ *
+ * Reads a cs8 IQ capture, digitally tunes to one channel center, low-
+ * passes to BW, decimates to (os_factor * BW), and feeds the result to
+ * lora_decoder_create_os() at the same os_factor. Prints decoded frames
+ * and the demod-stats summary on exit.
+ *
+ * Purpose: confirm or refute the hypothesis that main.c's critically-
+ * sampled PFB path (os_factor=1) loses payload integrity because the
+ * symbol grid is misaligned at the sub-sample level. If feeding the
+ * decoder at os_factor=4 moves payload_crc_pass off zero on the same
+ * /tmp/lf.cs8 file, the wideband path needs an oversampled channel
+ * stream too.
+ *
+ * Build: see CMakeLists.txt rule (test_oversample_self).
+ *
+ * Copyright (c) 2026 CEMAXECUTER LLC
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+#include "../lora.h"
+
+#include <complex.h>
+#include <math.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+/* Symbols lora.c expects from the rest of the project. */
+pthread_mutex_t fftw_planner_mutex = PTHREAD_MUTEX_INITIALIZER;
+int verbose = 0;
+
+static uint64_t g_frames = 0;
+
+static void on_frame(const uint8_t *payload, size_t len,
+                     const lora_frame_meta_t *meta, void *user)
+{
+    (void)user;
+    ++g_frames;
+    fprintf(stderr, "[frame] len=%zu has_crc=%d crc_ok=%d snr=%.1fdB",
+            len, meta->has_crc, meta->payload_crc_ok, (double)meta->snr_db);
+    if (len >= 12) {
+        fprintf(stderr, " from=!%02x%02x%02x%02x packet_id=0x%02x%02x%02x%02x",
+                payload[7], payload[6], payload[5], payload[4],
+                payload[11], payload[10], payload[9], payload[8]);
+    }
+    fprintf(stderr, "\n");
+}
+
+/* Build a windowed-sinc low-pass FIR. cutoff_hz is the -6 dB point.
+ * Length is rounded up to odd so the filter is linear-phase symmetric. */
+static int build_lpf(int n_taps, double samp_rate, double cutoff_hz,
+                     float *taps)
+{
+    if (n_taps < 21) n_taps = 21;
+    if ((n_taps & 1) == 0) n_taps += 1;
+    int c = n_taps / 2;
+    double wc = 2.0 * M_PI * cutoff_hz / samp_rate;
+    double sum = 0.0;
+    for (int i = 0; i < n_taps; ++i) {
+        int    k = i - c;
+        double s = (k == 0) ? wc : sin(wc * k) / k;
+        /* Hamming window. */
+        double w = 0.54 - 0.46 * cos(2.0 * M_PI * i / (n_taps - 1));
+        double t = s * w;
+        taps[i] = (float)t;
+        sum += t;
+    }
+    /* Normalize DC gain to 1.0. */
+    if (sum > 0.0) {
+        for (int i = 0; i < n_taps; ++i) taps[i] = (float)(taps[i] / sum);
+    }
+    return n_taps;
+}
+
+static void usage(const char *argv0)
+{
+    fprintf(stderr,
+        "usage: %s [opts]\n"
+        "  --file=PATH       cs8 IQ capture (required)\n"
+        "  --rate=HZ         capture sample rate (default 20000000)\n"
+        "  --center=HZ       capture center freq (default 915000000)\n"
+        "  --channel=HZ      target channel center freq (default 906875000)\n"
+        "  --bw=HZ           LoRa channel bandwidth (default 250000)\n"
+        "  --sf=N            spreading factor (default 11)\n"
+        "  --cr=N            coding rate denom 5..8 (default 5)\n"
+        "  --os=N            decoder os_factor (default 4)\n"
+        "  --duration=SEC    seconds to process (default 30; 0 = all)\n"
+        "  --ntaps=N         LPF taps (default 257)\n",
+        argv0);
+}
+
+int main(int argc, char **argv)
+{
+    const char *path  = NULL;
+    double samp_rate  = 20e6;
+    double center_hz  = 915e6;
+    double channel_hz = 906.875e6;        /* LongFast slot 0, US 915 MHz center, BW 250 kHz */
+    int    bw_hz      = 250000;
+    int    sf         = 11;
+    int    cr         = 5;
+    int    os_factor  = 4;
+    double duration_s = 30.0;
+    int    n_taps     = 257;
+
+    for (int i = 1; i < argc; ++i) {
+        const char *a = argv[i];
+        if      (!strncmp(a, "--file=",     7)) path        = a + 7;
+        else if (!strncmp(a, "--rate=",     7)) samp_rate   = atof(a + 7);
+        else if (!strncmp(a, "--center=",   9)) center_hz   = atof(a + 9);
+        else if (!strncmp(a, "--channel=", 10)) channel_hz  = atof(a + 10);
+        else if (!strncmp(a, "--bw=",       5)) bw_hz       = atoi(a + 5);
+        else if (!strncmp(a, "--sf=",       5)) sf          = atoi(a + 5);
+        else if (!strncmp(a, "--cr=",       5)) cr          = atoi(a + 5);
+        else if (!strncmp(a, "--os=",       5)) os_factor   = atoi(a + 5);
+        else if (!strncmp(a, "--duration=",11)) duration_s  = atof(a + 11);
+        else if (!strncmp(a, "--ntaps=",    8)) n_taps      = atoi(a + 8);
+        else if (!strcmp (a, "-h") || !strcmp(a, "--help")) { usage(argv[0]); return 0; }
+        else { fprintf(stderr, "unknown arg: %s\n", a); usage(argv[0]); return 2; }
+    }
+    if (!path) { usage(argv[0]); return 2; }
+
+    /* Integer decimation from samp_rate down to os_factor * bw. The PFB
+     * comment in main.c assumes critical sampling delivers integer-sample
+     * symbol alignment; this test forces os_factor*BW so the decoder's
+     * own sub-sample STO search has phase choices to pick from. */
+    int decim = (int)(samp_rate / (double)(os_factor * bw_hz) + 0.5);
+    if (decim <= 0) {
+        fprintf(stderr, "decim<=0 (rate=%g, os*bw=%d) -- check args\n",
+                samp_rate, os_factor * bw_hz);
+        return 2;
+    }
+    double channel_rate = samp_rate / (double)decim;
+
+    fprintf(stderr,
+        "test_oversample_self: file=%s rate=%.0f center=%.0f channel=%.0f "
+        "(offset %+.0f Hz) bw=%d sf=%d cr=%d os=%d decim=%d -> %.0f sps\n",
+        path, samp_rate, center_hz, channel_hz,
+        channel_hz - center_hz, bw_hz, sf, cr, os_factor, decim, channel_rate);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror("open cs8"); return 1; }
+
+    lora_decoder_t *dec = lora_decoder_create_os(sf, cr, bw_hz, os_factor);
+    if (!dec) { fprintf(stderr, "lora_decoder_create_os failed\n"); fclose(f); return 1; }
+    lora_decoder_set_callback(dec, on_frame, NULL);
+
+    /* Mix oscillator: shift the channel to DC. */
+    double freq_offset_hz = channel_hz - center_hz;
+    double mix_inc        = -2.0 * M_PI * freq_offset_hz / samp_rate;
+    double mix_phase      = 0.0;
+
+    /* FIR state. cutoff = bw/2 keeps the entire chirp passband, with
+     * stopband well inside the next-channel boundary. */
+    float *taps = malloc(sizeof(float) * (size_t)n_taps);
+    if (!taps) { fclose(f); return 1; }
+    n_taps = build_lpf(n_taps, samp_rate, (double)bw_hz * 0.5, taps);
+    float complex *delay = calloc((size_t)n_taps, sizeof(float complex));
+    if (!delay) { free(taps); fclose(f); return 1; }
+    int delay_head = 0;
+
+    /* Read cs8 in chunks and stream through DDC -> decim -> decoder. */
+    const size_t CHUNK = 65536; /* complex samples */
+    int8_t *raw = malloc(2 * CHUNK);
+    float complex *out = malloc(sizeof(float complex) * CHUNK);
+    if (!raw || !out) { free(taps); free(delay); fclose(f); return 1; }
+    uint64_t total_in_samps  = 0;
+    uint64_t total_out_samps = 0;
+    uint64_t budget = (duration_s > 0.0) ? (uint64_t)(samp_rate * duration_s) : (uint64_t)-1;
+    int decim_phase = 0;
+    while (total_in_samps < budget) {
+        size_t want = CHUNK;
+        if (total_in_samps + want > budget) want = (size_t)(budget - total_in_samps);
+        size_t got_bytes = fread(raw, 1, 2 * want, f);
+        if (got_bytes < 2) break;
+        size_t got = got_bytes / 2;
+        size_t out_n = 0;
+        for (size_t i = 0; i < got; ++i) {
+            float ii = (float)raw[2*i+0] / 127.0f;
+            float qq = (float)raw[2*i+1] / 127.0f;
+            float complex s = ii + I * qq;
+            /* Mix to DC. */
+            float complex mix = (float)cos(mix_phase) + I * (float)sin(mix_phase);
+            mix_phase += mix_inc;
+            if (mix_phase >  M_PI) mix_phase -= 2.0 * M_PI;
+            if (mix_phase < -M_PI) mix_phase += 2.0 * M_PI;
+            float complex mixed = s * mix;
+            /* FIR delay line. */
+            delay[delay_head] = mixed;
+            ++decim_phase;
+            if (decim_phase >= decim) {
+                decim_phase = 0;
+                /* Compute one output sample. */
+                float complex acc = 0.0f + 0.0f * I;
+                int idx = delay_head;
+                for (int k = 0; k < n_taps; ++k) {
+                    acc += delay[idx] * taps[k];
+                    idx = (idx == 0) ? (n_taps - 1) : (idx - 1);
+                }
+                out[out_n++] = acc;
+            }
+            delay_head = (delay_head + 1) % n_taps;
+        }
+        if (out_n > 0) {
+            lora_decoder_feed(dec, out, out_n);
+            total_out_samps += out_n;
+        }
+        total_in_samps += got;
+    }
+    fprintf(stderr,
+        "test_oversample_self: read %llu input samples (%.2f s), fed %llu post-decim samples to decoder\n",
+        (unsigned long long)total_in_samps, total_in_samps / samp_rate,
+        (unsigned long long)total_out_samps);
+    fprintf(stderr, "test_oversample_self: %llu frame(s) delivered.\n",
+            (unsigned long long)g_frames);
+
+    lora_demod_stats_dump(stderr);
+
+    lora_decoder_destroy(dec);
+    free(raw); free(out); free(delay); free(taps);
+    fclose(f);
+    return 0;
+}

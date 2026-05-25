@@ -1354,12 +1354,33 @@ static void state_tick(lora_decoder_t *d)
                            : 0.0f;
             if (d->meta.payload_crc_ok && d->payload_has_crc)
                 STATS_SNR(snr_hist_crc_pass, (double)d->meta.snr_db);
-            if (trace_on)
+            if (trace_on) {
                 fprintf(stderr, "[lora] DELIVER: %d payload bytes, crc_ok=%d, snr=%.1fdB, first 8: %02x %02x %02x %02x %02x %02x %02x %02x\n",
                         d->payload_len, d->meta.payload_crc_ok,
                         (double)d->meta.snr_db,
                         bytes[0], bytes[1], bytes[2], bytes[3],
                         bytes[4], bytes[5], bytes[6], bytes[7]);
+                if (d->payload_has_crc && byte_count >= 4) {
+                    /* Print got/want CRC + the last 6 raw bytes (last 4
+                     * payload bytes + 2 CRC bytes) so a single CRC mismatch
+                     * can be eyeballed: "is the corruption small (1-2 bits
+                     * flipped) or systematically shifted (wrong byte
+                     * positions)". Eyeballed corruption shape suggests
+                     * which payload-decode stage to inspect next. */
+                    size_t pay_len = (size_t)byte_count - 2;
+                    uint16_t got_crc = (uint16_t)(bytes[byte_count-2] |
+                                                  ((uint16_t)bytes[byte_count-1] << 8));
+                    uint16_t want_crc = lora_crc16(bytes, pay_len - 2);
+                    want_crc ^= bytes[pay_len - 1];
+                    want_crc ^= (uint16_t)bytes[pay_len - 2] << 8;
+                    fprintf(stderr,
+                        "[lora]   crc got=0x%04x want=0x%04x  tail: ... %02x %02x %02x %02x | crc %02x %02x\n",
+                        got_crc, want_crc,
+                        bytes[byte_count-6], bytes[byte_count-5],
+                        bytes[byte_count-4], bytes[byte_count-3],
+                        bytes[byte_count-2], bytes[byte_count-1]);
+                }
+            }
             if (d->cb) {
                 d->cb(bytes, (size_t)d->payload_len, &d->meta, d->user);
                 STATS_BUMP(published_frames, d->sf);

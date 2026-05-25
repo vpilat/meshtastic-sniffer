@@ -262,6 +262,20 @@ endif()
 set_property(TARGET meshtastic-recover PROPERTY C_STANDARD 99)
 install(TARGETS meshtastic-recover DESTINATION bin)
 
+# test_oversample_self: diagnostic-only standalone harness that bypasses
+# the polyphase channelizer, DDCs one slot at os_factor * BW, and feeds
+# the result to lora_decoder_create_os() at the same os_factor. Used to
+# A/B-test the "PFB critical sampling loses payload integrity" theory
+# against the same /tmp/lf.cs8 capture the live pipeline uses.
+add_executable(test_oversample_self
+    ${PROJECT_SOURCE_DIR}/tests/test_oversample_self.c
+    ${PROJECT_SOURCE_DIR}/lora.c)
+target_link_libraries(test_oversample_self PRIVATE
+    Threads::Threads
+    ${FFTW3F_LIB}
+    m)
+set_property(TARGET test_oversample_self PROPERTY C_STANDARD 99)
+
 # CPack
 set(CPACK_PACKAGE_NAME "meshtastic-sniffer")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Wideband Meshtastic LoRa receiver")
