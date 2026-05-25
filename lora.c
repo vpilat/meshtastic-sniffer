@@ -84,6 +84,14 @@ typedef struct {
     atomic_uint_fast64_t snr_hist_preamble [LORA_STATS_SNR_BUCKETS];
     atomic_uint_fast64_t snr_hist_header   [LORA_STATS_SNR_BUCKETS];
     atomic_uint_fast64_t snr_hist_crc_pass [LORA_STATS_SNR_BUCKETS];
+    /* Payload-length histogram for CRC pass vs fail, in 30-byte buckets
+     * [0-29, 30-59, 60-89, 90-119, 120-149, 150-179, 180-209, 210+]. The
+     * "is the payload corruption length-dependent" question becomes
+     * directly readable: if pass-buckets weight toward short lengths and
+     * fail-buckets toward long lengths, drift accumulates with payload
+     * duration. */
+    atomic_uint_fast64_t crc_pass_by_len   [8];
+    atomic_uint_fast64_t crc_fail_by_len   [8];
 } lora_demod_stats_t;
 
 static lora_demod_stats_t g_demod_stats;
@@ -101,6 +109,14 @@ static inline int stats_snr_bucket(double snr_db)
     int b = (int)floor((snr_db - LORA_STATS_SNR_LO_DB) / (double)LORA_STATS_SNR_STEP) + 1;
     if (b < 0) b = 0;
     if (b > LORA_STATS_SNR_BUCKETS - 1) b = LORA_STATS_SNR_BUCKETS - 1;
+    return b;
+}
+
+static inline int stats_paylen_bucket(int payload_len)
+{
+    if (payload_len < 0) return 0;
+    int b = payload_len / 30;
+    if (b > 7) b = 7;
     return b;
 }
 
@@ -190,6 +206,18 @@ void lora_demod_stats_dump(FILE *fp)
     stats_dump_hist(fp, "preamble",   g_demod_stats.snr_hist_preamble);
     stats_dump_hist(fp, "header_pass",g_demod_stats.snr_hist_header);
     stats_dump_hist(fp, "crc_pass",   g_demod_stats.snr_hist_crc_pass);
+    fprintf(fp, "[demod-stats] CRC pass/fail by payload length (30-byte buckets):\n");
+    fprintf(fp, "  %-12s %8s %8s %8s %8s %8s %8s %8s %8s\n", "",
+            "0-29", "30-59", "60-89", "90-119", "120-149", "150-179", "180-209", "210+");
+    fprintf(fp, "  %-12s", "pass");
+    for (int i = 0; i < 8; ++i)
+        fprintf(fp, " %8llu", (unsigned long long)atomic_load_explicit(
+            &g_demod_stats.crc_pass_by_len[i], memory_order_relaxed));
+    fprintf(fp, "\n  %-12s", "fail");
+    for (int i = 0; i < 8; ++i)
+        fprintf(fp, " %8llu", (unsigned long long)atomic_load_explicit(
+            &g_demod_stats.crc_fail_by_len[i], memory_order_relaxed));
+    fprintf(fp, "\n");
     fflush(fp);
 }
 
@@ -659,6 +687,26 @@ static int demod_downchirp_argmax(lora_decoder_t *d, const float complex *s)
         float p = r * r + im * im;
         if (p > best) { best = p; best_bin = k; }
     }
+    {
+        const char *e = getenv("MESHTASTIC_DEBUG_DUMP_DC2");
+        if (e && *e == '1') {
+            fprintf(stderr, "[lora] DC2 in: s[0..3]= (%+0.3f%+0.3fi) (%+0.3f%+0.3fi) (%+0.3f%+0.3fi) (%+0.3f%+0.3fi)  up_c[0..3]= (%+0.3f%+0.3fi) (%+0.3f%+0.3fi) (%+0.3f%+0.3fi) (%+0.3f%+0.3fi)\n",
+                crealf(s[0]), cimagf(s[0]), crealf(s[1]), cimagf(s[1]),
+                crealf(s[2]), cimagf(s[2]), crealf(s[3]), cimagf(s[3]),
+                crealf(up_c[0]), cimagf(up_c[0]), crealf(up_c[1]), cimagf(up_c[1]),
+                crealf(up_c[2]), cimagf(up_c[2]), crealf(up_c[3]), cimagf(up_c[3]));
+            /* Also show second/third peak to see if there's spectral splitting. */
+            float p2 = 0; int b2 = 0, p3 = 0, b3 = 0;
+            float pf = 0; int bf = 0;
+            for (int k = 0; k < d->N; ++k) {
+                float r = crealf(fft_out_c[k]), im = cimagf(fft_out_c[k]);
+                float p = r*r + im*im;
+                if (p > pf && k != best_bin) { pf = p; bf = k; }
+            }
+            fprintf(stderr, "[lora] DC2 FFT: peak=%d (mag=%.1f), 2nd=%d (mag=%.1f)\n",
+                best_bin, sqrtf(best), bf, sqrtf(pf));
+        }
+    }
     return best_bin;
 }
 
@@ -691,6 +739,16 @@ static void apply_cfo_correction(lora_decoder_t *d)
         double frac_phase = -2.0 * M_PI * (double)d->cfo_frac * (double)n * inv_N;
         float complex frac_tw = (float complex)(cos(frac_phase) + I * sin(frac_phase));
         down[n] = conjf(up_n) * frac_tw;
+    }
+    {
+        const char *e = getenv("MESHTASTIC_DEBUG_DUMP_DOWN");
+        if (e && *e == '1') {
+            fprintf(stderr, "[lora] apply_cfo_correction: id=%d frac=%.6f n_fold=%d -- down[0..7] =", id, (double)d->cfo_frac, n_fold_i);
+            for (int n = 0; n < 8; ++n) {
+                fprintf(stderr, " (%+0.4f%+0.4fi)", crealf(down[n]), cimagf(down[n]));
+            }
+            fprintf(stderr, "\n");
+        }
     }
 }
 
@@ -1050,6 +1108,13 @@ static void state_tick(lora_decoder_t *d)
             } else {
                 d->cfo_frac = 0.0f;
             }
+            /* DEBUG: env-gated force of cfo_frac to a fixed value, to
+             * isolate whether the cfo_frac path itself causes the
+             * |cfo_frac|>~0.38 cliff observed in synthetic tests. */
+            {
+                const char *e = getenv("MESHTASTIC_DEBUG_FORCE_CFO_FRAC");
+                if (e) d->cfo_frac = (float)atof(e);
+            }
 
             /* After the (N - k_hat) skip the symbol grid restarts at bin 0
              * so subsequent header/payload FFT-bin interpretation should
@@ -1081,6 +1146,11 @@ static void state_tick(lora_decoder_t *d)
                     d->cfo_int = down_val / 2;
                 else
                     d->cfo_int = (down_val - d->N) / 2;
+                /* DEBUG: env-gated force of cfo_int. */
+                {
+                    const char *e = getenv("MESHTASTIC_DEBUG_FORCE_CFO_INT");
+                    if (e) d->cfo_int = atoi(e);
+                }
                 /* Now rebuild the downchirp reference with cfo_int + cfo_frac
                  * applied. Subsequent header + payload FFTs dechirp through
                  * this corrected reference and the carrier offset is gone. */
@@ -1349,10 +1419,19 @@ static void state_tick(lora_decoder_t *d)
                 want_crc ^= (uint16_t)bytes[pay_len - 2] << 8;
                 d->meta.payload_crc_ok = (got_crc == want_crc);
                 STATS_BUMP(payload_crc_present, d->sf);
-                if (d->meta.payload_crc_ok) {
-                    STATS_BUMP(payload_crc_pass, d->sf);
-                } else {
-                    STATS_BUMP(payload_crc_fail, d->sf);
+                {
+                    int _lb = stats_paylen_bucket(d->payload_len);
+                    if (d->meta.payload_crc_ok) {
+                        STATS_BUMP(payload_crc_pass, d->sf);
+                        atomic_fetch_add_explicit(
+                            &g_demod_stats.crc_pass_by_len[_lb], 1,
+                            memory_order_relaxed);
+                    } else {
+                        STATS_BUMP(payload_crc_fail, d->sf);
+                        atomic_fetch_add_explicit(
+                            &g_demod_stats.crc_fail_by_len[_lb], 1,
+                            memory_order_relaxed);
+                    }
                 }
             } else {
                 d->meta.payload_crc_ok = !d->payload_has_crc;
@@ -1367,9 +1446,11 @@ static void state_tick(lora_decoder_t *d)
             if (d->meta.payload_crc_ok && d->payload_has_crc)
                 STATS_SNR(snr_hist_crc_pass, (double)d->meta.snr_db);
             if (trace_on) {
-                fprintf(stderr, "[lora] DELIVER: %d payload bytes, crc_ok=%d, snr=%.1fdB, first 8: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                fprintf(stderr, "[lora] DELIVER: %d payload bytes, crc_ok=%d, snr=%.1fdB, "
+                                "cfo_int=%d cfo_frac=%.4f sym_target=%d first 8: %02x %02x %02x %02x %02x %02x %02x %02x\n",
                         d->payload_len, d->meta.payload_crc_ok,
                         (double)d->meta.snr_db,
+                        d->cfo_int, (double)d->cfo_frac, d->payload_sym_target,
                         bytes[0], bytes[1], bytes[2], bytes[3],
                         bytes[4], bytes[5], bytes[6], bytes[7]);
                 if (d->payload_has_crc && byte_count >= 4) {
