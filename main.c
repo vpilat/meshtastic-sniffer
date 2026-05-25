@@ -117,8 +117,19 @@ static uint64_t g_offgrid_total = 0;
 
 /* Optional IQ record sink: tees raw bytes from push_samples() to disk
  * so a power user can replay later (with different keys, against a
- * tuned demod, etc.) via --file=PATH. */
-static FILE *g_iq_record_fp = NULL;
+ * tuned demod, etc.) via --file=PATH.
+ *
+ * g_iq_record_target_cs8: derived from the output filename extension
+ * (.cs8 -> 1, .cf32 -> 0). When SDR native is float but target is cs8
+ * we quantize on the fly so the file is actually readable as cs8 on
+ * replay. The pre-fix bug was: SoapySDR/USRP gave us float samples,
+ * we wrote raw float bytes into a .cs8-extension file, then a later
+ * --file --iq-format=cs8 replay read float bytes as int8 pairs and
+ * got garbage that decoded as collapsed-SNR noise. */
+static FILE   *g_iq_record_fp = NULL;
+static int     g_iq_record_target_cs8 = 0;
+static uint64_t g_iq_record_clip = 0;     /* count of samples >= 1.0 in magnitude */
+static double  g_iq_record_peak_mag2 = 0; /* max |sample|^2 observed */
 
 /* Per-channel rolling stats for --stats-json. Bumped from on_lora_frame
  * by channel id, dumped every 5s to stats-json file (rotates in place). */
@@ -187,10 +198,38 @@ static void process_sample_buf(sample_buf_t *buf)
     if (!buf) return;
     __atomic_add_fetch(&g_samples_total, buf->num, __ATOMIC_RELAXED);
     /* Tee raw IQ to disk before processing -- if the channelizer or
-     * demod misbehaves, the captured file is still usable for replay. */
+     * demod misbehaves, the captured file is still usable for replay.
+     * For target=cs8 when SDR native is float, quantize on the fly so
+     * the file is replay-compatible with --iq-format=cs8. Also track
+     * peak magnitude and clip count so the user can see when the input
+     * is near full-scale (clip count > 0 means quantization is losing
+     * dynamic range and the SDR gain should come down). */
     if (g_iq_record_fp) {
-        size_t bytes = (buf->format == SAMPLE_FMT_FLOAT) ? buf->num * 8 : buf->num * 2;
-        fwrite(buf->samples, 1, bytes, g_iq_record_fp);
+        if (buf->format == SAMPLE_FMT_FLOAT && g_iq_record_target_cs8) {
+            const float *flt = (const float *)buf->samples;
+            int8_t *tmp = malloc(buf->num * 2);
+            if (tmp) {
+                for (size_t i = 0; i < buf->num; ++i) {
+                    float ii = flt[2*i + 0];
+                    float qq = flt[2*i + 1];
+                    double mag2 = (double)ii * ii + (double)qq * qq;
+                    if (mag2 > g_iq_record_peak_mag2) g_iq_record_peak_mag2 = mag2;
+                    if (mag2 >= 1.0) g_iq_record_clip++;
+                    /* +/-127.5 -> +/-127 after rounding. Clip to int8 range. */
+                    int iq_i = (int)lrintf(ii * 127.0f);
+                    int iq_q = (int)lrintf(qq * 127.0f);
+                    if (iq_i >  127) iq_i =  127; else if (iq_i < -128) iq_i = -128;
+                    if (iq_q >  127) iq_q =  127; else if (iq_q < -128) iq_q = -128;
+                    tmp[2*i + 0] = (int8_t)iq_i;
+                    tmp[2*i + 1] = (int8_t)iq_q;
+                }
+                fwrite(tmp, 1, buf->num * 2, g_iq_record_fp);
+                free(tmp);
+            }
+        } else {
+            size_t bytes = (buf->format == SAMPLE_FMT_FLOAT) ? buf->num * 8 : buf->num * 2;
+            fwrite(buf->samples, 1, bytes, g_iq_record_fp);
+        }
     }
     if (g_channelizer) {
         if (buf->format == SAMPLE_FMT_INT8)
@@ -2583,13 +2622,23 @@ static int run_live(void)
         }
     }
 
-    /* Open IQ-record sink if requested. */
+    /* Open IQ-record sink if requested. Pick target byte format from
+     * file extension: .cs8 -> int8 I/Q (quantize float to int8 on the
+     * fly when SDR native is float); .cf32 or anything else -> native
+     * format written raw. Without the .cs8 quantization step, a .cs8
+     * file recorded from a float-native SDR (USRP/SoapySDR cf32) was
+     * actually fc32 bytes, which replay reads as int8 garbage. */
     if (opt_iq_record) {
         g_iq_record_fp = fopen(opt_iq_record, "wb");
-        if (!g_iq_record_fp)
+        if (!g_iq_record_fp) {
             fprintf(stderr, "iq-record: cannot open %s for write\n", opt_iq_record);
-        else
-            fprintf(stderr, "iq-record: writing raw IQ to %s\n", opt_iq_record);
+        } else {
+            size_t L = strlen(opt_iq_record);
+            g_iq_record_target_cs8 = (L >= 4 && !strcasecmp(opt_iq_record + L - 4, ".cs8"));
+            fprintf(stderr, "iq-record: writing %s to %s\n",
+                    g_iq_record_target_cs8 ? "cs8 (int8 I/Q)" : "native (raw)",
+                    opt_iq_record);
+        }
     }
 
     feed_init();
@@ -2678,7 +2727,13 @@ static int run_live(void)
     dedup_drainer_stop();
 
     /* Cleanup */
-    if (g_iq_record_fp) { fclose(g_iq_record_fp); g_iq_record_fp = NULL; }
+    if (g_iq_record_fp) {
+        fclose(g_iq_record_fp);
+        g_iq_record_fp = NULL;
+        fprintf(stderr, "iq-record: peak |sample|=%.3f, clip count=%llu samples\n",
+                sqrt(g_iq_record_peak_mag2),
+                (unsigned long long)g_iq_record_clip);
+    }
     web_shutdown();
     feed_shutdown();
     gpsd_shutdown();
