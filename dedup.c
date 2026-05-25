@@ -16,6 +16,8 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -78,6 +80,31 @@ void dedup_buffer(const uint8_t *payload, size_t payload_len,
                   const lora_frame_meta_t *meta, intptr_t user)
 {
     if (!payload || payload_len < 14 || payload_len > DEDUP_MAX_PAYLOAD) return;
+    /* MESHTASTIC_DEBUG_DEDUP_TRACE=1 prints one line per replica
+     * entering dedup. Used 2026-05-25 to confirm the synthetic
+     * single-frame slot-sweep finding: one SF9/BW250 frame injected
+     * at 915.125 MHz caused 79 of 80 MediumFast slot decoders to
+     * lock and produce a replica entering dedup. Persists for the
+     * follow-on PFB inter-bin rejection investigation. */
+    {
+        static int dbg_check = 0, dbg_on = 0;
+        if (!dbg_check) {
+            const char *e = getenv("MESHTASTIC_DEBUG_DEDUP_TRACE");
+            dbg_on = (e && *e == '1');
+            dbg_check = 1;
+        }
+        if (dbg_on) {
+            int crc_state = !meta ? -1
+                          : !meta->has_crc ? 2
+                          : (meta->payload_crc_ok ? 1 : 0);
+            fprintf(stderr, "[dedup] slot=%lld sf=%d bw=%d snr=%.1f crc=%d len=%zu\n",
+                    (long long)user,
+                    meta ? meta->sf : 0,
+                    meta ? meta->bw_hz : 0,
+                    meta ? (double)meta->snr_db : 0.0,
+                    crc_state, payload_len);
+        }
+    }
     int sf = meta ? meta->sf    : 0;
     int bw = meta ? meta->bw_hz : 0;
     float snr = meta ? meta->snr_db : 0.0f;
