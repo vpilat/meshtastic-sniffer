@@ -1005,19 +1005,31 @@ static void state_tick(lora_decoder_t *d)
             }
             if (k_hat < 0) k_hat = 0;
             if (k_hat >= d->N) k_hat = 0;
+            /* The preamble peak bin combines (STO_int + CFO_int) mod N.
+             * For positive CFO the bin lands at a small positive value;
+             * for negative CFO it wraps to N + signed_offset (i.e.
+             * "near N"). Treat k_hat as a signed offset in [-N/2, N/2)
+             * before computing the skip so the wrap doesn't flip the
+             * alignment by a full symbol. Without this fix, the total
+             * advance after PREAMBLE_OK->HEADER->DC2 reduces to
+             *     3.25*N + (cfo_int - k_hat_signed)
+             * which is 3.25*N exactly when cfo_int = k_hat_signed -- it
+             * does for positive CFO (k_hat == cfo_int), but for negative
+             * CFO the raw k_hat (= N + cfo_int) leaves a -N residue and
+             * we end up reading symbols one full symbol earlier than
+             * intended. Header symbols then dechirp at the wrong
+             * position and the 5-bit checksum fails. */
+            int k_signed = (k_hat >= d->N / 2) ? (k_hat - d->N) : k_hat;
             /* sto_skip_remaining is consumed in lora_decoder_feed at the
-             * INPUT rate (samp_rate = os_factor * bw_hz). preamble_bin is
-             * an output-rate FFT bin; multiply by os_factor to convert
-             * to the matching input-sample skip count.
+             * INPUT rate (samp_rate = os_factor * bw_hz). The signed
+             * offset is multiplied by os_factor to convert from output-
+             * rate bins to input samples.
              *
-             * Note: the just-consumed PREAMBLE_OK tick already advanced us
-             * one full symbol past the last preamble end (= start of
-             * NET_ID1 + k_hat samples). Adding (N - k_hat) lands us at
-             * start_of_DC1 -- skipping NET_ID2 entirely. (gr-lora_sdr's
-             * DETECT exit consumes only (N - k_hat), but we can't go
-             * backwards in a streaming pipeline.) STATE_HEADER then needs
-             * to read just 2 more ticks (DC1, DC2), NOT 3. */
-            d->sto_skip_remaining = (d->N - k_hat) * d->os_factor;
+             * Note: the just-consumed PREAMBLE_OK tick already advanced
+             * us one full symbol past the last preamble end. Adding
+             * (N - k_signed) more samples lands us at start_of_DC1 for
+             * either CFO sign. */
+            d->sto_skip_remaining = (d->N - k_signed) * d->os_factor;
 
             /* CFO_frac estimate from the captured preamble FFT bin values:
              * gr-lora_sdr frame_sync_impl.cc:241-243 form -- accumulate
