@@ -1162,14 +1162,30 @@ static void state_tick(lora_decoder_t *d)
             d->header_idx++;
             if (d->header_idx == 2) {
                 /* Just consumed DC1 + DC2; queue the 0.25-symbol
-                 * quarter-downchirp tail skip before reading header[0].
-                 * Plus an integer cfo_int sample correction (gr-lora_sdr
-                 * frame_sync_impl.cc:810 form). Clamp >= 0: streaming
-                 * skip can't go backwards, and cfo_int < -N/4 would only
-                 * happen on absurd carrier offsets we'd never lock anyway. */
-                int trim = d->N / 4 + d->cfo_int;
-                if (trim < 0) trim = 0;
-                d->sto_skip_remaining += trim * d->os_factor;
+                 * quarter-downchirp tail skip plus the carrier-offset
+                 * time correction before reading header[0].
+                 *
+                 * The earlier integer-only form `trim = N/4 + cfo_int`
+                 * dropped the cfo_frac portion of the total CFO. At
+                 * |cfo_frac| > ~0.4 (any SF -- this is a fractional-
+                 * boundary issue, not SF-specific) the truncated trim
+                 * lands the header symbol's FFT window 1 output sample
+                 * off the symbol grid, the dechirped peak shifts by 1
+                 * bin, and the 5-bit header checksum fails. Verified
+                 * 2026-05-25: forcing the alternative split
+                 * (cfo_int+1, cfo_frac-1) at SF9 +8 kHz produced an
+                 * identical down[n] chirp reference but trim that was
+                 * 1 sample larger, and decoded correctly.
+                 *
+                 * Compute at input-sample precision using the full
+                 * real-valued total CFO so the cfo_frac contribution
+                 * round-trips correctly into the skip count. */
+                double trim_out = (double)d->N / 4.0
+                                + (double)d->cfo_int
+                                + (double)d->cfo_frac;
+                int trim_input = (int)lrint(trim_out * (double)d->os_factor);
+                if (trim_input < 0) trim_input = 0;
+                d->sto_skip_remaining += trim_input;
             }
             break;
         }
