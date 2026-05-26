@@ -898,6 +898,20 @@ static void reset_to_idle(lora_decoder_t *d)
     d->cfo_frac           = 0.0f;
     d->snr_db_sum         = 0.0;
     d->snr_db_count       = 0;
+    /* Rebuild the chirp references to id=0. apply_cfo_correction
+     * (called at DC2) mutates d->upchirp and d->downchirp in place
+     * to bake the just-measured cfo_int into the reference. Without
+     * rebuilding here, the *next* frame's preamble detection runs
+     * against a stale shifted reference -- its FFT peaks land at
+     * (true_bin - prev_cfo_int) instead of true_bin, k_hat is wrong,
+     * sto_skip is wrong, header symbols decode bit-corrupted.
+     * Cross-validated 2026-05-25 against gr-lora_sdr on
+     * b205_cluster2.cs8: gr-lora_sdr decoded 4 distinct CRC-valid
+     * frames from !433c0b98, our decoder caught the first one cleanly
+     * and produced bit-corrupted (CRC-fail) copies of the other three
+     * with the drift-across-payload signature -- because the chirp
+     * references stayed mutated from the first frame's cfo_int. */
+    build_chirps(d->upchirp, d->downchirp, d->N);
 }
 
 /* Run the state machine for one accumulated symbol. */
