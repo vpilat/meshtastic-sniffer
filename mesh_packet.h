@@ -44,6 +44,7 @@ typedef struct mesh_event {
     int            sf;
     int            cr;             /* 5..8 = 4/5..4/8 */
     int            bw_hz;
+    uint64_t       freq_hz;        /* RF center freq of the slot the frame arrived on; 0 = unknown */
     char           preset_name[24]; /* "LongFast" / "LongSlow" / ... or "" */
 
     /* Decoder slot index (0..CHANNELIZER_MAX_CHANNELS-1) -- which of the

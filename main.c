@@ -145,6 +145,7 @@ typedef struct {
     int      sf;
     int      cr;
     int      bw_hz;
+    uint64_t freq_hz;
     char     preset_name[24];
 } chan_stat_t;
 static chan_stat_t g_chan_stats[CHANNELIZER_MAX_CHANNELS];
@@ -502,6 +503,8 @@ static void on_mesh_event(const mesh_event_t *ev, void *user) {
     mesh_event_t stamped = *ev;
     stamped.slot_id = (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS)
                       ? channel_id : -1;
+    if (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS)
+        stamped.freq_hz = g_chan_stats[channel_id].freq_hz;
     if (ctx) {
         stamped.has_crc          = ctx->has_crc;
         stamped.payload_crc_ok   = ctx->payload_crc_ok;
@@ -901,9 +904,10 @@ static int instantiate_channel(uint64_t f_hz, int bw_hz, int sf, int cr)
     /* Capture this slot's radio params + preset name into per-channel stats
      * so the stats-json line is self-describing. */
     if (id >= 0 && id < CHANNELIZER_MAX_CHANNELS) {
-        g_chan_stats[id].sf    = sf;
-        g_chan_stats[id].cr    = cr;
-        g_chan_stats[id].bw_hz = bw_hz;
+        g_chan_stats[id].sf      = sf;
+        g_chan_stats[id].cr      = cr;
+        g_chan_stats[id].bw_hz   = bw_hz;
+        g_chan_stats[id].freq_hz = f_hz;
         g_chan_stats[id].preset_name[0] = 0;
         for (int p = 0; p < MESH_PRESET_COUNT; ++p) {
             const mesh_preset_def_t *d = &MESH_PRESETS[p];

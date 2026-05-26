@@ -221,6 +221,7 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
         jw_field_u32(j, "sf",    (uint32_t)ev->sf);
         jw_field_u32(j, "cr",    (uint32_t)ev->cr);
         jw_field_u32(j, "bw_hz", (uint32_t)ev->bw_hz);
+        if (ev->freq_hz) jw_field_u64(j, "freq_hz", ev->freq_hz);
         if (ev->preset_name[0]) jw_field_str(j, "preset", ev->preset_name);
     }
 
