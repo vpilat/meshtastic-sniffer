@@ -738,13 +738,20 @@ static void *stats_thread(void *arg)
             uint64_t cp  = __atomic_load_n(&g_crc_pass_total, __ATOMIC_RELAXED);
             uint64_t cf  = __atomic_load_n(&g_crc_fail_total, __ATOMIC_RELAXED);
             uint64_t ct  = cp + cf;
-            char crc_buf[48];
+            /* No-CRC frames (implicit-header style) aren't counted toward the
+             * pass/fail rate because there's no CRC field on the wire to check.
+             * Surface their count alongside total so the f/ct gap is explained
+             * instead of looking like silent failures. */
+            uint64_t nc  = (f >= ct) ? (f - ct) : 0;
+            char crc_buf[80];
             if (ct > 0)
-                snprintf(crc_buf, sizeof(crc_buf), "CRC %.1f%% (%llu/%llu)",
+                snprintf(crc_buf, sizeof(crc_buf), "CRC %.1f%% (%llu/%llu, %llu no-CRC)",
                          100.0 * (double)cp / (double)ct,
-                         (unsigned long long)cp, (unsigned long long)ct);
+                         (unsigned long long)cp, (unsigned long long)ct,
+                         (unsigned long long)nc);
             else
-                snprintf(crc_buf, sizeof(crc_buf), "CRC -- (0/0)");
+                snprintf(crc_buf, sizeof(crc_buf), "CRC -- (0/0, %llu no-CRC)",
+                         (unsigned long long)nc);
             double rate_msps = (double)(s - prev_samples) / 5.0e6;
             prev_samples = s;
             /* Drainer liveness: if the dedup tick hasn't moved in 5x its
