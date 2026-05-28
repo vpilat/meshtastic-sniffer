@@ -68,13 +68,21 @@ class SynthTx(gr.top_block):
         self.msg_connect((self.id_inc, "msg_out"), (self.strobe, "set_msg"))
 
         # AWGN + CFO + SFO via channels.channel_model.
-        # epsilon = receiver sample-clock rate / transmitter rate. 1.0 = locked.
-        # 1.0 + sfo_ppm * 1e-6 simulates a receiver crystal running fast by
-        # sfo_ppm parts-per-million; accumulated symbol-grid drift across a
-        # long payload is what payload-time AFC is supposed to track.
-        # Typical Meshtastic node TCXO drift is single-digit ppm, worst-case
-        # generic crystal up to ~50 ppm. LoRa spec tolerates ~25 ppm.
-        freq_offset_norm = args.cfo_hz / self.channel_rate if args.cfo_hz else 0.0
+        #
+        # Real-world physics: receiver clock and transmitter clock differ by
+        # some ppm. That single offset drives BOTH the SFO (sample rate ratio,
+        # epsilon) AND a proportional carrier-frequency offset (CFO =
+        # carrier * ppm * 1e-6). The synth links them by default so
+        # `--sfo-ppm=25` produces the cell a real radio pair at 25 ppm would
+        # see -- not a physically impossible "pure SFO with zero CFO."
+        #
+        # --carrier-freq controls the carrier used for the linkage (default
+        # 915e6, US Meshtastic). --cfo-hz still adds on top so a diagnostic
+        # user can force a specific residual CFO (e.g. --cfo-hz=-22875 with
+        # --sfo-ppm=25 cancels the linkage and restores the pure-SFO test).
+        carrier_cfo = args.sfo_ppm * args.carrier_freq * 1e-6
+        total_cfo_hz = args.cfo_hz + carrier_cfo
+        freq_offset_norm = total_cfo_hz / self.channel_rate if total_cfo_hz else 0.0
         epsilon = 1.0 + args.sfo_ppm * 1e-6
         self.chan = channels.channel_model(
             noise_voltage=noise_voltage,
@@ -114,9 +122,14 @@ def parse_args() -> argparse.Namespace:
                    help="gr-lora cr enum: 1=4/5, 2=4/6, 3=4/7, 4=4/8")
     p.add_argument("--bw", type=int, required=True)
     p.add_argument("--snr-db", type=float, default=20.0)
-    p.add_argument("--cfo-hz", type=float, default=0.0)
+    p.add_argument("--cfo-hz", type=float, default=0.0,
+                   help="Extra CFO in Hz on top of the SFO-derived CFO from carrier_freq")
     p.add_argument("--sfo-ppm", type=float, default=0.0,
-                   help="Receiver sample-clock offset in ppm (0 = locked)")
+                   help="Receiver sample-clock offset in ppm (0 = locked). "
+                        "Linked to CFO via --carrier-freq.")
+    p.add_argument("--carrier-freq", type=float, default=915e6,
+                   help="Carrier frequency used to derive CFO from SFO (default 915 MHz, US Meshtastic). "
+                        "Pass 0 to break the linkage and test pure SFO without carrier-derived CFO.")
     p.add_argument("--n-frames", type=int, default=10)
     p.add_argument("--payload-bytes", type=int, default=20)
     p.add_argument("--os-factor", type=int, default=4)
