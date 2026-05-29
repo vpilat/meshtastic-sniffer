@@ -516,6 +516,19 @@ struct lora_decoder {
     double            snr_db_sum;
     int               snr_db_count;
 
+    /* Frame-sync trace fields (gated by MESHTASTIC_DEBUG_FRAMESYNC env).
+     * Behavior-inert when the env flag is unset; only the bookkeeping
+     * happens (one int increment per delivered/aborted frame, eight
+     * float writes per header). Used for side-by-side comparison with
+     * gr-lora_sdr's frame_sync_impl.cc on the same input file. */
+    int               framesync_frame_idx;   /* monotonic per-decoder */
+    int               framesync_k_hat;       /* preamble mode bin at lock */
+    int               framesync_sto_skip;    /* sto_skip set at lock */
+    int               framesync_dc2_down_val;
+    int               framesync_trim_input;
+    int               framesync_header_bins[8];
+    float             framesync_header_mags[8];
+
     lora_frame_cb_t cb;
     void           *user;
 };
@@ -527,6 +540,21 @@ struct lora_decoder {
  * (continuous chirp from -BW/2 to +BW/2 over N samples)
  *
  * The downchirp for dechirping is the complex conjugate. */
+
+/* Cached one-shot read of MESHTASTIC_DEBUG_FRAMESYNC: when set to "1"
+ * the decoder emits per-frame side-by-side-with-gr-lora trace lines
+ * tagged "[fs]" on stderr. Unset (default) is a no-op: the env getenv
+ * is paid once per process, then a static int gate is consulted. */
+static int framesync_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("MESHTASTIC_DEBUG_FRAMESYNC");
+        cached = (e && e[0] == '1') ? 1 : 0;
+    }
+    return cached;
+}
+
 static void build_chirps(fftwf_complex *up, fftwf_complex *down, int N)
 {
     /* Reference chirp formula matches gr-lora_sdr utilities.h
@@ -1293,6 +1321,23 @@ static void state_tick(lora_decoder_t *d)
              * so subsequent header/payload FFT-bin interpretation should
              * subtract 0 (not k_hat). */
             d->preamble_bin = 0;
+
+            if (framesync_enabled()) {
+                ++d->framesync_frame_idx;
+                d->framesync_k_hat    = k_hat;
+                d->framesync_sto_skip = d->sto_skip_remaining;
+                fprintf(stderr,
+                    "[fs] frame=%d LOCK sf=%d os=%d k_hat=%d k_signed=%d sto_skip=%d "
+                    "sto_frac=%+0.4f cfo_frac=%+0.4f preamble_bins=[",
+                    d->framesync_frame_idx, d->sf, d->os_factor, k_hat, k_signed,
+                    d->sto_skip_remaining,
+                    (double)d->sto_frac, (double)d->cfo_frac);
+                int hist_n = d->preamble_bin_hist_count;
+                for (int i = 0; i < hist_n; ++i)
+                    fprintf(stderr, "%d%s", d->preamble_bin_hist[i],
+                            i == hist_n - 1 ? "" : ",");
+                fprintf(stderr, "]\n");
+            }
             d->preamble_bin_hist_count = 0;
         } else {
             reset_to_idle(d);
@@ -1319,6 +1364,8 @@ static void state_tick(lora_decoder_t *d)
                     d->cfo_int = down_val / 2;
                 else
                     d->cfo_int = (down_val - d->N) / 2;
+                if (framesync_enabled())
+                    d->framesync_dc2_down_val = down_val;
                 /* DEBUG: env-gated force of cfo_int. */
                 {
                     const char *e = getenv("MESHTASTIC_DEBUG_FORCE_CFO_INT");
@@ -1368,6 +1415,15 @@ static void state_tick(lora_decoder_t *d)
                 int trim_input = (int)lrint(trim_out * (double)d->os_factor);
                 if (trim_input < 0) trim_input = 0;
                 d->sto_skip_remaining += trim_input;
+                if (framesync_enabled()) {
+                    d->framesync_trim_input = trim_input;
+                    fprintf(stderr,
+                        "[fs] frame=%d DC2  down_val=%d cfo_int=%d cfo_frac=%+0.4f "
+                        "trim_input=%d sto_skip_after=%d\n",
+                        d->framesync_frame_idx, d->framesync_dc2_down_val,
+                        d->cfo_int, (double)d->cfo_frac,
+                        trim_input, d->sto_skip_remaining);
+                }
             }
             break;
         }
@@ -1396,9 +1452,25 @@ static void state_tick(lora_decoder_t *d)
                 uint16_t gray = (uint16_t)(demod_out ^ (demod_out >> 1));
                 d->header_syms[hi] = gray;
             }
+            if (framesync_enabled() && hi >= 0 && hi < 8) {
+                d->framesync_header_bins[hi] = (int)sym;
+                d->framesync_header_mags[hi] = peak;
+            }
             ++d->header_idx;
         }
         if (d->header_idx == 2 + 8) {
+            if (framesync_enabled()) {
+                fprintf(stderr, "[fs] frame=%d HEADER bins=[",
+                        d->framesync_frame_idx);
+                for (int i = 0; i < 8; ++i)
+                    fprintf(stderr, "%d%s", d->framesync_header_bins[i],
+                            i == 7 ? "" : ",");
+                fprintf(stderr, "] mags=[");
+                for (int i = 0; i < 8; ++i)
+                    fprintf(stderr, "%.3f%s", (double)d->framesync_header_mags[i],
+                            i == 7 ? "" : ",");
+                fprintf(stderr, "]\n");
+            }
             /* Decode header per gr-lora_sdr header_decoder_impl.cc:
              *   - sf_app = sf-2 (header always uses reduced-rate)
              *   - cr_hdr = 8 (header always 4/8)
