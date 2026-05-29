@@ -689,12 +689,29 @@ static uint16_t demod_one_symbol_full(lora_decoder_t *d,
                                       float *peak_mag, float *noise_mag,
                                       int capture_bin, float complex *bin_capture)
 {
-    /* Multiply by downchirp (s[n] * conj(upchirp[n])) */
+    /* CFO-compensated dechirp. Per gr-lora_sdr frame_sync_impl.cc:631-634,
+     * CFO compensation lives on the SAMPLE side, not in a mutated chirp
+     * reference. We pre-rotate the input by exp(-j*2*pi*cfo_bins*n/N)
+     * where cfo_bins = cfo_int + cfo_frac, then dechirp by the CANONICAL
+     * downchirp. Mathematically equivalent to mutating the chirp; in
+     * practice the chirp-mutation approach didn't actually shift the
+     * FFT argmax bin in our pipeline (verified 2026-05-27 via
+     * choke-point trace). Sample rotation does. */
     float complex *fft_in_c  = (float complex *)d->fft_in;
     float complex *fft_out_c = (float complex *)d->fft_out;
     float complex *down_c    = (float complex *)d->downchirp;
-    for (int n = 0; n < d->N; ++n)
-        fft_in_c[n] = s[n] * down_c[n];
+    double cfo_bins = (double)d->cfo_int + (double)d->cfo_frac;
+    if (cfo_bins != 0.0) {
+        double k = -2.0 * M_PI * cfo_bins / (double)d->N;
+        for (int n = 0; n < d->N; ++n) {
+            double ph = k * (double)n;
+            float complex rot = (float)cos(ph) + I * (float)sin(ph);
+            fft_in_c[n] = s[n] * rot * down_c[n];
+        }
+    } else {
+        for (int n = 0; n < d->N; ++n)
+            fft_in_c[n] = s[n] * down_c[n];
+    }
     fftwf_execute(d->fft_plan);
 
     float best = 0.0f; int best_bin = 0;
@@ -787,32 +804,11 @@ static int demod_downchirp_argmax(lora_decoder_t *d, const float complex *s)
  * cfo_frac phase ramp e^{-j*2*pi*cfo_frac/N * n}. */
 static void apply_cfo_correction(lora_decoder_t *d)
 {
-    float complex *u    = (float complex *)d->upchirp;
-    float complex *down = (float complex *)d->downchirp;
-    int id = d->cfo_int;
-    int n_fold_i = d->N - id;  /* may be negative for negative cfo_int */
-    double inv_N = 1.0 / (double)d->N;
-    for (int n = 0; n < d->N; ++n) {
-        double offset = (n < n_fold_i)
-            ? ((double)id * inv_N - 0.5)
-            : ((double)id * inv_N - 1.5);
-        double phase = 2.0 * M_PI * ((double)n * (double)n * 0.5 * inv_N + offset * (double)n);
-        float complex up_n = (float complex)(cos(phase) + I * sin(phase));
-        u[n] = up_n;
-        double frac_phase = -2.0 * M_PI * (double)d->cfo_frac * (double)n * inv_N;
-        float complex frac_tw = (float complex)(cos(frac_phase) + I * sin(frac_phase));
-        down[n] = conjf(up_n) * frac_tw;
-    }
-    {
-        const char *e = getenv("MESHTASTIC_DEBUG_DUMP_DOWN");
-        if (e && *e == '1') {
-            fprintf(stderr, "[lora] apply_cfo_correction: id=%d frac=%.6f n_fold=%d -- down[0..7] =", id, (double)d->cfo_frac, n_fold_i);
-            for (int n = 0; n < 8; ++n) {
-                fprintf(stderr, " (%+0.4f%+0.4fi)", crealf(down[n]), cimagf(down[n]));
-            }
-            fprintf(stderr, "\n");
-        }
-    }
+    /* No-op. CFO correction now lives in demod_one_symbol_full as a
+     * per-sample input rotation. The chirp references stay canonical
+     * across the frame's lifetime; reset_to_idle still rebuilds them
+     * defensively. */
+    (void)d;
 }
 
 /* ---- Soft-decision LLR computation ----
@@ -844,8 +840,20 @@ static void compute_symbol_llrs(lora_decoder_t *d,
     float complex *fft_in_c  = (float complex *)d->fft_in;
     float complex *fft_out_c = (float complex *)d->fft_out;
     float complex *down_c    = (float complex *)d->downchirp;
-    for (int n = 0; n < d->N; ++n)
-        fft_in_c[n] = s[n] * down_c[n];
+    /* Same per-sample CFO pre-rotation as demod_one_symbol_full so the
+     * soft-decode path's LLRs use a properly compensated FFT. */
+    double cfo_bins = (double)d->cfo_int + (double)d->cfo_frac;
+    if (cfo_bins != 0.0) {
+        double k = -2.0 * M_PI * cfo_bins / (double)d->N;
+        for (int n = 0; n < d->N; ++n) {
+            double ph = k * (double)n;
+            float complex rot = (float)cos(ph) + I * (float)sin(ph);
+            fft_in_c[n] = s[n] * rot * down_c[n];
+        }
+    } else {
+        for (int n = 0; n < d->N; ++n)
+            fft_in_c[n] = s[n] * down_c[n];
+    }
     fftwf_execute(d->fft_plan);
 
     /* Per-bin |Y|^2 as max-log likelihood. */
@@ -1343,21 +1351,17 @@ static void state_tick(lora_decoder_t *d)
                  * quarter-downchirp tail skip plus the carrier-offset
                  * time correction before reading header[0].
                  *
-                 * The earlier integer-only form `trim = N/4 + cfo_int`
-                 * dropped the cfo_frac portion of the total CFO. At
-                 * |cfo_frac| > ~0.4 (any SF -- this is a fractional-
-                 * boundary issue, not SF-specific) the truncated trim
-                 * lands the header symbol's FFT window 1 output sample
-                 * off the symbol grid, the dechirped peak shifts by 1
-                 * bin, and the 5-bit header checksum fails. Verified
-                 * 2026-05-25: forcing the alternative split
-                 * (cfo_int+1, cfo_frac-1) at SF9 +8 kHz produced an
-                 * identical down[n] chirp reference but trim that was
-                 * 1 sample larger, and decoded correctly.
-                 *
-                 * Compute at input-sample precision using the full
-                 * real-valued total CFO so the cfo_frac contribution
-                 * round-trips correctly into the skip count. */
+                 * The trim's cfo_int+cfo_frac term is a TIME-domain
+                 * correction, separate from the FREQUENCY-domain
+                 * rotation now living in demod_one_symbol_full /
+                 * compute_symbol_llrs. The preamble lock at bin k_hat
+                 * absorbs (STO + cfo_int) into the skip; the trim's
+                 * +cfo_int+cfo_frac then re-adds the cfo time shift
+                 * so the symbol window grid stays at the true symbol
+                 * boundary rather than the preamble-locked grid (those
+                 * differ by exactly cfo_int+cfo_frac samples when
+                 * STO=0). Rotation in the demod handles the residual
+                 * cfo-induced frequency offset of the dechirped peak. */
                 double trim_out = (double)d->N / 4.0
                                 + (double)d->cfo_int
                                 + (double)d->cfo_frac;
