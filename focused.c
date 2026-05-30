@@ -495,10 +495,16 @@ void focused_worker_arm(focused_worker_t *w,
     w->start_sample = start_sample;
     w->hold_down_s  = hold_down_s > 0.0 ? hold_down_s : 5.0;
     atomic_store(&w->last_frame_mono_us, mono_us());
+    /* Flip state to DECODING synchronously so the pool dispatcher's
+     * "find an IDLE worker" loop sees this worker as busy on the
+     * very next preamble-lock callback. Without this, two locks
+     * arriving within ~2 ms (the worker poll interval) could both
+     * pick the same worker because arm_pending alone doesn't change
+     * what the dispatcher reads. The worker thread still observes
+     * arm_pending and (re)builds DDC / cursor / activity timer
+     * inside its loop. */
+    atomic_store(&w->state, FOCUSED_STATE_DECODING);
     atomic_store(&w->arm_pending, 1);
-    /* The worker thread observes arm_pending on its next loop tick;
-     * we don't flip state directly here to keep cursor / activity
-     * timer reset on the worker side. */
 }
 
 void focused_worker_arm_slot(focused_worker_t *w,
