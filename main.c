@@ -151,7 +151,9 @@ static pthread_mutex_t   g_focus_pool_mu = PTHREAD_MUTEX_INITIALIZER;
 #define FOCUS_POOL_FREQS_MAX 32
 static uint64_t          g_focus_pool_freqs[FOCUS_POOL_FREQS_MAX];
 static int               g_focus_pool_freqs_n = 0;
+static double            g_focus_pool_min_snr_db         = 0.0;
 static _Atomic uint64_t  g_focus_pool_promote_total      = 0;
+static _Atomic uint64_t  g_focus_pool_promote_below_snr  = 0;
 static _Atomic uint64_t  g_focus_pool_promote_matched    = 0;
 static _Atomic uint64_t  g_focus_pool_promote_assigned   = 0;
 static _Atomic uint64_t  g_focus_pool_promote_dropped    = 0;
@@ -999,7 +1001,10 @@ static void on_wideband_preamble_lock(int sf, int cr, int bw_hz,
     uint64_t now = __atomic_load_n(&g_samples_total, __ATOMIC_RELAXED);
 
     /* Pool mode: any wideband slot promotes, optionally filtered by
-     * the freq allowlist. */
+     * the freq allowlist and the SNR floor. The SNR gate stops the
+     * pool from burning workers on low-quality preamble locks
+     * (mostly PFB bin-leakage ghosts and noise) -- wideband decode
+     * is unaffected, so confirmed wideband frames still publish. */
     if (g_focus_pool_size > 0) {
         uint64_t chan_freq = g_chan_stats[channel_id].freq_hz;
         if (chan_freq == 0) return;
@@ -1008,6 +1013,11 @@ static void on_wideband_preamble_lock(int sf, int cr, int bw_hz,
             for (int i = 0; i < g_focus_pool_freqs_n; ++i)
                 if (g_focus_pool_freqs[i] == chan_freq) { allowed = 1; break; }
             if (!allowed) return;
+        }
+        if (g_focus_pool_min_snr_db > 0.0 &&
+            (double)snr_db < g_focus_pool_min_snr_db) {
+            atomic_fetch_add(&g_focus_pool_promote_below_snr, 1);
+            return;
         }
         promote_to_pool((double)chan_freq, bw_hz, sf, cr, now);
         return;
@@ -3105,6 +3115,7 @@ static int run_live(void)
         g_focus_pool_cfg_size    = opt_focus_workers;
         g_focus_pool_hold_down_s = opt_focus_hold_s;
         g_focus_pool_rewind_ms   = opt_focus_rewind_ms;
+        g_focus_pool_min_snr_db  = opt_focus_min_snr_db;
         /* Parse --focus-freqs CSV (CLI). */
         if (opt_focus_freqs_csv) {
             char buf[512];
@@ -3172,6 +3183,12 @@ static int run_live(void)
                 if (f > 0) g_focus_pool_freqs[g_focus_pool_freqs_n++] = f;
             }
         }
+    }
+
+    /* Hidden env override for the SNR floor (dB). */
+    {
+        const char *e = getenv("MESHTASTIC_FOCUS_MIN_SNR_DB");
+        if (e && *e) g_focus_pool_min_snr_db = atof(e);
     }
 
     /* Hidden env override for the pool size + timing trio. */
@@ -3254,9 +3271,10 @@ static int run_live(void)
         if (opt_deep_decode == DEEP_DECODE_AUTO) {
             fprintf(stderr,
                     "[coverage] deep-decode: auto, workers=%d, ring=%dms, "
-                    "rewind=%dms, hold=%.1fs%s\n",
+                    "rewind=%dms, hold=%.1fs, min-snr=%.1fdB%s\n",
                     g_focus_pool_cfg_size, (int)g_iq_ring_ms,
                     g_focus_pool_rewind_ms, g_focus_pool_hold_down_s,
+                    g_focus_pool_min_snr_db,
                     g_focus_pool_freqs_n > 0 ? ", allowlisted" : "");
             if (g_focus_pool_freqs_n > 0) {
                 fprintf(stderr, "[coverage] focus-freqs:");
@@ -3367,11 +3385,12 @@ static int run_live(void)
         }
         fprintf(stderr,
                 "focus-pool: promotions total=%llu matched_existing=%llu "
-                "assigned_idle=%llu dropped_busy=%llu\n",
+                "assigned_idle=%llu dropped_busy=%llu below_snr=%llu\n",
                 (unsigned long long)atomic_load(&g_focus_pool_promote_total),
                 (unsigned long long)atomic_load(&g_focus_pool_promote_matched),
                 (unsigned long long)atomic_load(&g_focus_pool_promote_assigned),
-                (unsigned long long)atomic_load(&g_focus_pool_promote_dropped));
+                (unsigned long long)atomic_load(&g_focus_pool_promote_dropped),
+                (unsigned long long)atomic_load(&g_focus_pool_promote_below_snr));
     }
     pthread_join(stats_tid, NULL);
     pthread_join(wd_tid, NULL);

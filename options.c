@@ -44,6 +44,7 @@ double        opt_focus_hold_s        = 5.0;
 int           opt_focus_rewind_ms     = 20;
 int           opt_focus_ring_ms       = 500;
 char         *opt_focus_freqs_csv     = NULL;
+double        opt_focus_min_snr_db    = 6.0;
 
 char         *opt_region              = NULL;
 char         *opt_preset_csv          = NULL;
@@ -139,6 +140,9 @@ void options_print_help(const char *prog)
         "  --focus-rewind-ms=N    rewind from 'now' when a preamble lock arrives (default 20)\n"
         "  --focus-ring-ms=N      raw-IQ ring buffer in ms of history (default 500)\n"
         "  --focus-freqs=LIST     optional allowlist (decimal Hz, comma-separated). Default: any slot.\n"
+        "  --focus-min-snr-db=DB  drop pool promotions below this preamble-lock SNR (default 6).\n"
+        "                         Wideband decode is unaffected; this only filters which locks\n"
+        "                         wake a focused worker. Set 0 to promote on every lock.\n"
         "  --diagnostics          enable verbose internal counters (demod stats, focus telemetry, etc.)\n"
         "\n"
         "SDR selection (one):\n"
@@ -335,7 +339,7 @@ int options_parse(int argc, char **argv)
         O_DECODE, O_SCAN, O_SCAN_DEC, O_ALERT_OFF_GRID, O_TRUSTED_ONLY,
         O_SHOW_UNTRUSTED, O_DIAGNOSTICS,
         O_DEEP_DECODE, O_FOCUS_WORKERS, O_FOCUS_HOLD_S, O_FOCUS_REWIND_MS,
-        O_FOCUS_FREQS, O_FOCUS_RING_MS,
+        O_FOCUS_FREQS, O_FOCUS_RING_MS, O_FOCUS_MIN_SNR_DB,
         O_SIMD_GEN, O_SELFTEST, O_SELFTEST_REJECTION, O_SELFTEST_REJECTION_AMP,
         O_SELFTEST_REJECTION_TWOTONE, O_SELFTEST_REJECTION_OFFBIN,
         O_SELFTEST_REJECTION_PROCGAIN,
@@ -403,6 +407,7 @@ int options_parse(int argc, char **argv)
         { "focus-rewind-ms", required_argument, NULL, O_FOCUS_REWIND_MS },
         { "focus-freqs",     required_argument, NULL, O_FOCUS_FREQS },
         { "focus-ring-ms",   required_argument, NULL, O_FOCUS_RING_MS },
+        { "focus-min-snr-db", required_argument, NULL, O_FOCUS_MIN_SNR_DB },
         { "simd-generic", no_argument,     NULL, O_SIMD_GEN },
         { "selftest",   no_argument,       NULL, O_SELFTEST },
         { "selftest-rejection", no_argument, NULL, O_SELFTEST_REJECTION },
@@ -578,6 +583,7 @@ int options_parse(int argc, char **argv)
         case O_FOCUS_REWIND_MS: opt_focus_rewind_ms = atoi(optarg); break;
         case O_FOCUS_RING_MS:   opt_focus_ring_ms   = atoi(optarg); break;
         case O_FOCUS_FREQS:     opt_focus_freqs_csv = strdup(optarg); break;
+        case O_FOCUS_MIN_SNR_DB: opt_focus_min_snr_db = atof(optarg); break;
 
         case O_SIMD_GEN: opt_force_simd_generic = true; break;
         case O_SELFTEST: return 100;
