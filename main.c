@@ -913,6 +913,23 @@ static void on_lora_frame(const uint8_t *payload, size_t payload_len,
     dedup_buffer(payload, payload_len, meta, channel_id);
 }
 
+/* Stamp the per-channel stat slot a pool worker emits frames under
+ * with the slot it is currently configured for. This is what gives
+ * focused-pool JSON lines a freq_hz / sf / cr / bw_hz / preset_name
+ * so downstream tools can attribute them to a real channel instead
+ * of seeing a synthetic high channel_id with zeros. */
+static void focus_pool_stamp_chan_stats(int worker_idx, double freq_hz,
+                                        int bw_hz, int sf, int cr)
+{
+    int chan_id = CHANNELIZER_MAX_CHANNELS - 2 - worker_idx;
+    if (chan_id < 0 || chan_id >= CHANNELIZER_MAX_CHANNELS) return;
+    g_chan_stats[chan_id].sf      = sf;
+    g_chan_stats[chan_id].cr      = cr;
+    g_chan_stats[chan_id].bw_hz   = bw_hz;
+    g_chan_stats[chan_id].freq_hz = (uint64_t)freq_hz;
+    /* preset_name was set to "FocusedPool" at spawn; leave it. */
+}
+
 /* Pool-mode dispatcher: route a wideband preamble lock to the pool. */
 static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
                             uint64_t now_samples)
@@ -935,6 +952,7 @@ static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
             cf == freq_hz && cb == bw_hz && csf == sf && ccr == cr &&
             focused_worker_state(w) != FOCUSED_STATE_IDLE) {
             focused_worker_arm_slot(w, freq_hz, bw_hz, sf, cr, start, hd);
+            focus_pool_stamp_chan_stats(i, freq_hz, bw_hz, sf, cr);
             atomic_fetch_add(&g_focus_pool_promote_matched, 1);
             pthread_mutex_unlock(&g_focus_pool_mu);
             return;
@@ -946,6 +964,7 @@ static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
         if (!w) continue;
         if (focused_worker_state(w) == FOCUSED_STATE_IDLE) {
             focused_worker_arm_slot(w, freq_hz, bw_hz, sf, cr, start, hd);
+            focus_pool_stamp_chan_stats(i, freq_hz, bw_hz, sf, cr);
             uint64_t armed = atomic_fetch_add(&g_focus_pool_promote_assigned, 1) + 1;
             pthread_mutex_unlock(&g_focus_pool_mu);
             /* Throttle stderr noise: log first 5, then every 25th. */
@@ -3075,22 +3094,40 @@ static int run_live(void)
         }
     }
 
-    /* Optional raw-IQ ring buffer. Sized in milliseconds of capture
-     * history; allocated lazily on the first sample so it picks up
-     * the SDR's native format. Default off -- production cluster2
-     * path sees no allocations and no extra copies. */
+    /* Resolve deep-decode config from --deep-decode + --focus-*. CLI
+     * values are the canonical source; env vars below are accepted as
+     * power-user overrides but not advertised in --help. Setting
+     * --deep-decode=auto provisions ring + pool with their CLI
+     * defaults; --deep-decode=off (the conservative default) keeps
+     * the wideband-only path byte-identical to pre-Phase-3 main. */
+    if (opt_deep_decode == DEEP_DECODE_AUTO) {
+        g_iq_ring_ms             = (size_t)opt_focus_ring_ms;
+        g_focus_pool_cfg_size    = opt_focus_workers;
+        g_focus_pool_hold_down_s = opt_focus_hold_s;
+        g_focus_pool_rewind_ms   = opt_focus_rewind_ms;
+        /* Parse --focus-freqs CSV (CLI). */
+        if (opt_focus_freqs_csv) {
+            char buf[512];
+            strncpy(buf, opt_focus_freqs_csv, sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = 0;
+            char *save = NULL;
+            for (char *t = strtok_r(buf, ",", &save); t;
+                 t = strtok_r(NULL, ",", &save)) {
+                if (g_focus_pool_freqs_n >= FOCUS_POOL_FREQS_MAX) break;
+                uint64_t f = strtoull(t, NULL, 10);
+                if (f > 0) g_focus_pool_freqs[g_focus_pool_freqs_n++] = f;
+            }
+        }
+    }
+    /* Hidden env overrides. Operators can still flip these without
+     * touching the CLI; they win over the --deep-decode resolution
+     * above so an operator can disable the pool from outside without
+     * editing the launch command. */
     {
         const char *e = getenv("MESHTASTIC_IQ_RING_MS");
         if (e && *e) {
             long ms = atol(e);
-            if (ms > 0 && ms <= 10000) {
-                g_iq_ring_ms = (size_t)ms;
-                fprintf(stderr, "iq-ring: requested %ld ms of history "
-                                "(will allocate on first sample).\n", ms);
-            } else if (ms != 0) {
-                fprintf(stderr, "iq-ring: MESHTASTIC_IQ_RING_MS=%ld out of range "
-                                "(1..10000); disabled.\n", ms);
-            }
+            if (ms >= 0 && ms <= 10000) g_iq_ring_ms = (size_t)ms;
         }
     }
 
@@ -3119,59 +3156,37 @@ static int run_live(void)
         }
     }
 
-    /* Optional pool slot allowlist. Comma-separated decimal Hz; only
-     * preamble locks from wideband channels whose freq matches one of
-     * these will promote into the pool. */
+    /* Hidden env override for pool allowlist (CSV decimal Hz). */
     {
         const char *fl = getenv("MESHTASTIC_FOCUS_POOL_FREQS");
         if (fl && *fl) {
             char buf[512];
             strncpy(buf, fl, sizeof(buf) - 1); buf[sizeof(buf)-1] = 0;
             char *save = NULL;
+            /* Env overrides: replace, don't append. */
+            g_focus_pool_freqs_n = 0;
             for (char *t = strtok_r(buf, ",", &save); t;
                  t = strtok_r(NULL, ",", &save)) {
                 if (g_focus_pool_freqs_n >= FOCUS_POOL_FREQS_MAX) break;
                 uint64_t f = strtoull(t, NULL, 10);
                 if (f > 0) g_focus_pool_freqs[g_focus_pool_freqs_n++] = f;
             }
-            if (g_focus_pool_freqs_n > 0) {
-                fprintf(stderr, "focus-pool: allowlist (%d freqs):",
-                        g_focus_pool_freqs_n);
-                for (int i = 0; i < g_focus_pool_freqs_n; ++i)
-                    fprintf(stderr, " %.3fMHz",
-                            (double)g_focus_pool_freqs[i] / 1e6);
-                fputc('\n', stderr);
-            }
         }
     }
 
-    /* Pool: bounded set of generic focused workers.
-     *   MESHTASTIC_FOCUS_POOL=N[:hold_down_s[:rewind_ms]]
-     * (e.g. "2:5.0:20"). Any wideband preamble lock promotes to the
-     * pool: same-slot locks refresh the existing worker; a new slot
-     * lands on an idle worker; all-busy locks are dropped. */
+    /* Hidden env override for the pool size + timing trio. */
     {
         const char *fp = getenv("MESHTASTIC_FOCUS_POOL");
         if (fp && *fp) {
             int n = 0;
-            double hd = 5.0;
-            int rewind_ms = 20;
+            double hd = g_focus_pool_hold_down_s;
+            int rewind_ms = g_focus_pool_rewind_ms;
             int nparsed = sscanf(fp, "%d:%lf:%d", &n, &hd, &rewind_ms);
             if (nparsed >= 1 && n >= 1 && n <= FOCUS_POOL_MAX) {
-                g_focus_pool_cfg_size   = n;
+                g_focus_pool_cfg_size    = n;
                 g_focus_pool_hold_down_s = hd > 0.0 ? hd : 5.0;
                 g_focus_pool_rewind_ms   = rewind_ms > 0 ? rewind_ms : 20;
                 if (g_iq_ring_ms == 0) g_iq_ring_ms = 500;
-                fprintf(stderr,
-                        "focus-pool: requested %d worker(s), hold_down=%.1fs, "
-                        "rewind=%dms\n",
-                        n, g_focus_pool_hold_down_s,
-                        g_focus_pool_rewind_ms);
-            } else {
-                fprintf(stderr,
-                        "focus-pool: bad MESHTASTIC_FOCUS_POOL='%s' "
-                        "(want N[:hd_s[:rewind_ms]], N=1..%d)\n",
-                        fp, FOCUS_POOL_MAX);
             }
         }
     }
@@ -3218,6 +3233,49 @@ static int run_live(void)
                 g_focused_auto_spec[0] = 0;
             }
         }
+    }
+
+    /* Startup coverage banner. Tells the operator exactly what the
+     * receiver is set up to do -- region/presets covered, deep-decode
+     * mode, output filtering -- so they know what "all Meshtastic"
+     * means for this run instead of having to infer it from the
+     * later stats stream. */
+    {
+        double low_mhz  = ((double)center_freq - samp_rate * 0.5) / 1e6;
+        double high_mhz = ((double)center_freq + samp_rate * 0.5) / 1e6;
+        fprintf(stderr,
+                "[coverage] center=%.3fMHz rate=%.3fMsps region=%s presets=%s\n",
+                (double)center_freq / 1e6, samp_rate / 1e6,
+                opt_region ? opt_region : "(default)",
+                opt_preset_csv ? opt_preset_csv : "LongFast");
+        fprintf(stderr,
+                "[coverage] scan: %.3f-%.3fMHz, %d channel(s) configured\n",
+                low_mhz, high_mhz, n);
+        if (opt_deep_decode == DEEP_DECODE_AUTO) {
+            fprintf(stderr,
+                    "[coverage] deep-decode: auto, workers=%d, ring=%dms, "
+                    "rewind=%dms, hold=%.1fs%s\n",
+                    g_focus_pool_cfg_size, (int)g_iq_ring_ms,
+                    g_focus_pool_rewind_ms, g_focus_pool_hold_down_s,
+                    g_focus_pool_freqs_n > 0 ? ", allowlisted" : "");
+            if (g_focus_pool_freqs_n > 0) {
+                fprintf(stderr, "[coverage] focus-freqs:");
+                for (int i = 0; i < g_focus_pool_freqs_n; ++i)
+                    fprintf(stderr, " %.3fMHz",
+                            (double)g_focus_pool_freqs[i] / 1e6);
+                fputc('\n', stderr);
+            }
+        } else {
+            fprintf(stderr,
+                    "[coverage] deep-decode: off (wideband only). "
+                    "Pass --deep-decode=auto to wake focused workers.\n");
+        }
+        fprintf(stderr,
+                "[output] %s%s%s\n",
+                opt_trusted_only ? "confirmed events only (--trusted-only)"
+                                 : "all events (CRC pass + fails)",
+                opt_show_untrusted ? " + show-untrusted" : "",
+                opt_diagnostics    ? " + diagnostics"    : "");
     }
 
     feed_init();

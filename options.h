@@ -62,6 +62,23 @@ extern bool          opt_alert_off_grid;
 extern bool          opt_list_devices;
 extern bool          opt_print_schema;
 extern bool          opt_trusted_only;
+extern bool          opt_show_untrusted;
+extern bool          opt_diagnostics;
+
+/* Deep-decode mode -- toggles the scan-then-focus pool. OFF keeps the
+ * wideband-only path byte-identical to the pre-Phase-3 baseline; AUTO
+ * provisions an IQ ring and a focused-worker pool that rewind and
+ * deep-decode wideband-detected slots. */
+typedef enum {
+    DEEP_DECODE_OFF = 0,
+    DEEP_DECODE_AUTO = 1,
+} deep_decode_mode_t;
+extern deep_decode_mode_t opt_deep_decode;
+extern int           opt_focus_workers;       /* 1..4 */
+extern double        opt_focus_hold_s;        /* hysteresis seconds */
+extern int           opt_focus_rewind_ms;     /* rewind from "now" on promotion */
+extern int           opt_focus_ring_ms;       /* raw-IQ ring history */
+extern char         *opt_focus_freqs_csv;     /* optional allowlist Hz,Hz,... */
 
 /* Meshtastic */
 extern char         *opt_region;          /* "US", "EU_868", ... */

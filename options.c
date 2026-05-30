@@ -36,6 +36,14 @@ bool          opt_alert_off_grid      = false;
 bool          opt_list_devices        = false;
 bool          opt_print_schema        = false;
 bool          opt_trusted_only        = false;
+bool          opt_show_untrusted      = false;
+bool          opt_diagnostics         = false;
+deep_decode_mode_t opt_deep_decode    = DEEP_DECODE_OFF;
+int           opt_focus_workers       = 2;
+double        opt_focus_hold_s        = 5.0;
+int           opt_focus_rewind_ms     = 20;
+int           opt_focus_ring_ms       = 500;
+char         *opt_focus_freqs_csv     = NULL;
 
 char         *opt_region              = NULL;
 char         *opt_preset_csv          = NULL;
@@ -120,6 +128,18 @@ void options_print_help(const char *prog)
         "  --alert-off-grid       emit OFF_GRID_LORA alerts on first off-grid sighting\n"
         "  --trusted-only         suppress fields_trusted:false events from JSON/UDP/MQTT/web feeds\n"
         "                         (stats counters still tally everything; only publishing is filtered)\n"
+        "  --show-untrusted       include CRC-fail/no-CRC events even when --trusted-only is set\n"
+        "                         (kept off by default in deep-decode-auto mode)\n"
+        "\n"
+        "Scan-then-focus deep decode (wideband scanner always on, focused workers wake on activity):\n"
+        "  --deep-decode=MODE     off | auto (default off). 'auto' enables the focused-worker pool\n"
+        "                         driven by wideband preamble locks; wideband never goes blind.\n"
+        "  --focus-workers=N      bounded pool size, 1..4 (default 2)\n"
+        "  --focus-hold-s=S       seconds of frame inactivity before a worker idles (default 5)\n"
+        "  --focus-rewind-ms=N    rewind from 'now' when a preamble lock arrives (default 20)\n"
+        "  --focus-ring-ms=N      raw-IQ ring buffer in ms of history (default 500)\n"
+        "  --focus-freqs=LIST     optional allowlist (decimal Hz, comma-separated). Default: any slot.\n"
+        "  --diagnostics          enable verbose internal counters (demod stats, focus telemetry, etc.)\n"
         "\n"
         "SDR selection (one):\n"
         "  --hackrf[=SERIAL]      use HackRF One\n"
@@ -313,6 +333,9 @@ int options_parse(int argc, char **argv)
         O_ZMQ_CURVE_SECRET, O_ZMQ_CURVE_KEYGEN, O_STATION_T_ACC_NS,
         O_HACKRF_LNA, O_HACKRF_VGA, O_HACKRF_AMP, O_HACKRF_AMP_OFF, O_USRP_OTW,
         O_DECODE, O_SCAN, O_SCAN_DEC, O_ALERT_OFF_GRID, O_TRUSTED_ONLY,
+        O_SHOW_UNTRUSTED, O_DIAGNOSTICS,
+        O_DEEP_DECODE, O_FOCUS_WORKERS, O_FOCUS_HOLD_S, O_FOCUS_REWIND_MS,
+        O_FOCUS_FREQS, O_FOCUS_RING_MS,
         O_SIMD_GEN, O_SELFTEST, O_SELFTEST_REJECTION, O_SELFTEST_REJECTION_AMP,
         O_SELFTEST_REJECTION_TWOTONE, O_SELFTEST_REJECTION_OFFBIN,
         O_SELFTEST_REJECTION_PROCGAIN,
@@ -371,7 +394,15 @@ int options_parse(int argc, char **argv)
         { "scan",       no_argument,       NULL, O_SCAN },
         { "scan-and-decode", no_argument,  NULL, O_SCAN_DEC },
         { "alert-off-grid",  no_argument,  NULL, O_ALERT_OFF_GRID },
-        { "trusted-only",    no_argument,  NULL, O_TRUSTED_ONLY },
+        { "trusted-only",    no_argument,       NULL, O_TRUSTED_ONLY },
+        { "show-untrusted",  no_argument,       NULL, O_SHOW_UNTRUSTED },
+        { "diagnostics",     no_argument,       NULL, O_DIAGNOSTICS },
+        { "deep-decode",     required_argument, NULL, O_DEEP_DECODE },
+        { "focus-workers",   required_argument, NULL, O_FOCUS_WORKERS },
+        { "focus-hold-s",    required_argument, NULL, O_FOCUS_HOLD_S },
+        { "focus-rewind-ms", required_argument, NULL, O_FOCUS_REWIND_MS },
+        { "focus-freqs",     required_argument, NULL, O_FOCUS_FREQS },
+        { "focus-ring-ms",   required_argument, NULL, O_FOCUS_RING_MS },
         { "simd-generic", no_argument,     NULL, O_SIMD_GEN },
         { "selftest",   no_argument,       NULL, O_SELFTEST },
         { "selftest-rejection", no_argument, NULL, O_SELFTEST_REJECTION },
@@ -525,6 +556,28 @@ int options_parse(int argc, char **argv)
         case O_SCAN_DEC:         opt_op_mode = OP_MODE_SCAN_AND_DECODE; break;
         case O_ALERT_OFF_GRID:   opt_alert_off_grid = true; break;
         case O_TRUSTED_ONLY:     opt_trusted_only   = true; break;
+        case O_SHOW_UNTRUSTED:   opt_show_untrusted = true; break;
+        case O_DIAGNOSTICS:      opt_diagnostics    = true; break;
+        case O_DEEP_DECODE:
+            if (!strcasecmp(optarg, "off"))       opt_deep_decode = DEEP_DECODE_OFF;
+            else if (!strcasecmp(optarg, "auto")) opt_deep_decode = DEEP_DECODE_AUTO;
+            else { fprintf(stderr,
+                           "--deep-decode must be off|auto (got %s)\n", optarg);
+                   return 2; }
+            break;
+        case O_FOCUS_WORKERS: {
+            int n = atoi(optarg);
+            if (n < 1 || n > 4) {
+                fprintf(stderr, "--focus-workers must be 1..4 (got %s)\n", optarg);
+                return 2;
+            }
+            opt_focus_workers = n;
+            break;
+        }
+        case O_FOCUS_HOLD_S:    opt_focus_hold_s    = atof(optarg); break;
+        case O_FOCUS_REWIND_MS: opt_focus_rewind_ms = atoi(optarg); break;
+        case O_FOCUS_RING_MS:   opt_focus_ring_ms   = atoi(optarg); break;
+        case O_FOCUS_FREQS:     opt_focus_freqs_csv = strdup(optarg); break;
 
         case O_SIMD_GEN: opt_force_simd_generic = true; break;
         case O_SELFTEST: return 100;
