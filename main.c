@@ -1164,23 +1164,73 @@ static void *stats_thread(void *arg)
              * tags the source sniffer when --station-id is set;
              * fusion's subscriber loop falls back to the registry name
              * if absent. */
-            char sline[320];
+            char sline[768];
             int sn;
             const char *sid = opt_station_id ? opt_station_id : "";
+            /* Derive a human-readable clock-discipline class from
+             * opt_station_t_acc_ns so the dashboard can show "Clock:
+             * GPSDO (100 ns)" at a glance. Operators self-report this
+             * via --station-t-acc-ns at startup. */
+            const char *clock_class = "NTP";
+            if (opt_station_t_acc_ns <= 200)            clock_class = "GPSDO";
+            else if (opt_station_t_acc_ns <= 2000)      clock_class = "PPS";
+            else if (opt_station_t_acc_ns <= 100000)    clock_class = "chrony";
+            /* Sum focused-pool worker frame totals so the dashboard
+             * can show how much the pool contributed cumulatively. */
+            uint64_t focus_frames_sum = 0;
+            for (int i = 0; i < g_focus_pool_size; ++i)
+                if (g_focus_pool[i])
+                    focus_frames_sum += focused_worker_frames_delivered(g_focus_pool[i]);
+            uint64_t ring_samples = g_iq_ring ? iq_ring_total_appended(g_iq_ring) : 0;
+            int focus_active = (g_focus_pool_size > 0) ? 1 : 0;
+            int off_part = scanner_on
+                ? snprintf(NULL, 0, ",\"off_grid\":%llu", (unsigned long long)og)
+                : 0;
+            (void)off_part;
             if (scanner_on)
                 sn = snprintf(sline, sizeof(sline),
                     "{\"event\":\"STATS\",\"station\":\"%s\","
                     "\"msps\":%.2f,\"frames\":%llu,"
-                    "\"decrypted\":%llu,\"off_grid\":%llu}\n",
+                    "\"decrypted\":%llu,\"off_grid\":%llu,"
+                    "\"clock\":\"%s\",\"clock_acc_ns\":%lu,"
+                    "\"focus_active\":%s,\"focus_workers\":%d,"
+                    "\"focus_promotions\":%llu,\"focus_matched\":%llu,"
+                    "\"focus_assigned\":%llu,\"focus_dropped\":%llu,"
+                    "\"focus_below_snr\":%llu,\"focus_frames\":%llu,"
+                    "\"ring_ms\":%d,\"ring_samples\":%llu}\n",
                     sid, rate_msps, (unsigned long long)f,
-                    (unsigned long long)d, (unsigned long long)og);
+                    (unsigned long long)d, (unsigned long long)og,
+                    clock_class, (unsigned long)opt_station_t_acc_ns,
+                    focus_active ? "true" : "false", g_focus_pool_size,
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_total),
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_matched),
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_assigned),
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_dropped),
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_below_snr),
+                    (unsigned long long)focus_frames_sum,
+                    (int)g_iq_ring_ms, (unsigned long long)ring_samples);
             else
                 sn = snprintf(sline, sizeof(sline),
                     "{\"event\":\"STATS\",\"station\":\"%s\","
                     "\"msps\":%.2f,\"frames\":%llu,"
-                    "\"decrypted\":%llu}\n",
+                    "\"decrypted\":%llu,"
+                    "\"clock\":\"%s\",\"clock_acc_ns\":%lu,"
+                    "\"focus_active\":%s,\"focus_workers\":%d,"
+                    "\"focus_promotions\":%llu,\"focus_matched\":%llu,"
+                    "\"focus_assigned\":%llu,\"focus_dropped\":%llu,"
+                    "\"focus_below_snr\":%llu,\"focus_frames\":%llu,"
+                    "\"ring_ms\":%d,\"ring_samples\":%llu}\n",
                     sid, rate_msps, (unsigned long long)f,
-                    (unsigned long long)d);
+                    (unsigned long long)d,
+                    clock_class, (unsigned long)opt_station_t_acc_ns,
+                    focus_active ? "true" : "false", g_focus_pool_size,
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_total),
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_matched),
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_assigned),
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_dropped),
+                    (unsigned long long)atomic_load(&g_focus_pool_promote_below_snr),
+                    (unsigned long long)focus_frames_sum,
+                    (int)g_iq_ring_ms, (unsigned long long)ring_samples);
             if (sn > 0) {
                 if (opt_web_port > 0) web_publish_line(sline, (size_t)sn);
                 zmq_pub_publish(sline, (size_t)sn);
