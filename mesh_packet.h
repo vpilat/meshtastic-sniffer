@@ -76,6 +76,15 @@ typedef struct mesh_event {
     uint64_t       station_t_ns;
     uint32_t       station_t_acc_ns;
 
+    /* TDOA metadata: SDR-rate absolute sample index at the moment of
+     * preamble lock for this frame, plus the sample rate so fusion can
+     * convert sample deltas into seconds. preamble_lock_sample_idx is
+     * monotonically increasing per station; cross-station alignment
+     * requires GPSDO/PPS clocks (see station_t_acc_ns). Both 0 when
+     * the source isn't a tuned LoRa decoder. */
+    uint64_t       preamble_lock_sample_idx;
+    uint64_t       sample_rate_sps;
+
     /* Inner Data envelope (when decrypted == true) */
     uint32_t       portnum;
     const uint8_t *payload;

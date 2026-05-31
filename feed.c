@@ -213,6 +213,18 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
     if (ev->station_t_ns && opt_station_id) {
         jw_field_u64(j, "station_t_ns",     ev->station_t_ns);
         jw_field_u32(j, "station_t_acc_ns", ev->station_t_acc_ns);
+        /* TDOA anchor: absolute SDR sample index at the moment of
+         * preamble lock for this frame, plus the SDR sample rate so
+         * fusion can convert sample-count deltas across stations to
+         * seconds. Only emit when populated; pre-lock or non-LoRa
+         * frames leave both at 0. */
+        if (ev->preamble_lock_sample_idx) {
+            jw_field_u64(j, "preamble_lock_sample_idx",
+                         ev->preamble_lock_sample_idx);
+        }
+        if (ev->sample_rate_sps) {
+            jw_field_u64(j, "sample_rate_sps", ev->sample_rate_sps);
+        }
     }
 
     /* Radio-layer fields: which physical preset/SF/CR/BW the frame arrived on.

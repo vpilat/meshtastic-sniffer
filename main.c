@@ -224,6 +224,11 @@ typedef struct {
     int      bw_hz;
     uint64_t freq_hz;
     char     preset_name[24];
+    /* TDOA: absolute SDR-rate sample index recorded the last time this
+     * slot's wideband decoder fired a preamble lock (wideband path) or
+     * the last time a wideband lock promoted this focused-pool slot. 0
+     * until first lock; frames decoded before any lock event report 0. */
+    uint64_t preamble_lock_sample_idx;
 } chan_stat_t;
 static chan_stat_t g_chan_stats[CHANNELIZER_MAX_CHANNELS];
 
@@ -744,6 +749,7 @@ typedef struct {
     float    cfo_hz;
     uint64_t station_t_ns;     /* first-replica realtime ns */
     uint32_t station_t_acc_ns; /* operator-self-reported clock-discipline class */
+    uint64_t preamble_lock_sample_idx; /* abs SDR sample idx at lock; 0 if unknown */
 } frame_emit_ctx_t;
 
 static void on_mesh_event(const mesh_event_t *ev, void *user) {
@@ -762,6 +768,8 @@ static void on_mesh_event(const mesh_event_t *ev, void *user) {
         stamped.cfo_hz           = ctx->cfo_hz;
         stamped.station_t_ns     = ctx->station_t_ns;
         stamped.station_t_acc_ns = ctx->station_t_acc_ns;
+        stamped.preamble_lock_sample_idx = ctx->preamble_lock_sample_idx;
+        stamped.sample_rate_sps  = (uint64_t)(samp_rate + 0.5);
         /* CRC-failed frames have corrupt bytes by definition. AES-CTR is
          * a stream cipher with no integrity check, so the protobuf
          * parser can "succeed" on garbage and produce fictitious
@@ -821,6 +829,12 @@ static void dedup_emit_locked(const dedup_entry_t *e)
         pcap_out_write_frame(e->best_payload, e->best_payload_len,
                              (uint32_t)ts.tv_sec, (uint32_t)(ts.tv_nsec / 1000));
     }
+    uint64_t lock_idx = 0;
+    if (channel_id >= 0 && channel_id < CHANNELIZER_MAX_CHANNELS) {
+        lock_idx = __atomic_load_n(
+            &g_chan_stats[channel_id].preamble_lock_sample_idx,
+            __ATOMIC_RELAXED);
+    }
     frame_emit_ctx_t ctx = {
         .channel_id       = (int)channel_id,
         .has_crc          = e->best_meta.has_crc,
@@ -828,6 +842,7 @@ static void dedup_emit_locked(const dedup_entry_t *e)
         .cfo_hz           = e->best_meta.cfo_hz,
         .station_t_ns     = e->first_seen_t_ns,
         .station_t_acc_ns = (uint32_t)opt_station_t_acc_ns,
+        .preamble_lock_sample_idx = lock_idx,
     };
     mesh_packet_decode_with_radio(e->best_payload, e->best_payload_len,
                                   e->best_meta.rssi_db, e->best_meta.snr_db,
@@ -922,7 +937,8 @@ static void on_lora_frame(const uint8_t *payload, size_t payload_len,
  * so downstream tools can attribute them to a real channel instead
  * of seeing a synthetic high channel_id with zeros. */
 static void focus_pool_stamp_chan_stats(int worker_idx, double freq_hz,
-                                        int bw_hz, int sf, int cr)
+                                        int bw_hz, int sf, int cr,
+                                        uint64_t lock_sample_idx)
 {
     int chan_id = CHANNELIZER_MAX_CHANNELS - 2 - worker_idx;
     if (chan_id < 0 || chan_id >= CHANNELIZER_MAX_CHANNELS) return;
@@ -930,6 +946,11 @@ static void focus_pool_stamp_chan_stats(int worker_idx, double freq_hz,
     g_chan_stats[chan_id].cr      = cr;
     g_chan_stats[chan_id].bw_hz   = bw_hz;
     g_chan_stats[chan_id].freq_hz = (uint64_t)freq_hz;
+    /* TDOA: carry the wideband-channel lock sample idx onto the focused
+     * pool slot so frames decoded from the rewound IQ window stamp the
+     * same absolute SDR sample index as the wideband path would. */
+    __atomic_store_n(&g_chan_stats[chan_id].preamble_lock_sample_idx,
+                     lock_sample_idx, __ATOMIC_RELAXED);
     /* preset_name was set to "FocusedPool" at spawn; leave it. */
 }
 
@@ -978,7 +999,7 @@ static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
             cf == freq_hz && cb == bw_hz && csf == sf && ccr == cr &&
             focused_worker_state(w) != FOCUSED_STATE_IDLE) {
             focused_worker_arm_slot_os(w, freq_hz, bw_hz, sf, cr, os, start, hd);
-            focus_pool_stamp_chan_stats(i, freq_hz, bw_hz, sf, cr);
+            focus_pool_stamp_chan_stats(i, freq_hz, bw_hz, sf, cr, now_samples);
             atomic_fetch_add(&g_focus_pool_promote_matched, 1);
             pthread_mutex_unlock(&g_focus_pool_mu);
             return;
@@ -990,7 +1011,7 @@ static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
         if (!w) continue;
         if (focused_worker_state(w) == FOCUSED_STATE_IDLE) {
             focused_worker_arm_slot_os(w, freq_hz, bw_hz, sf, cr, os, start, hd);
-            focus_pool_stamp_chan_stats(i, freq_hz, bw_hz, sf, cr);
+            focus_pool_stamp_chan_stats(i, freq_hz, bw_hz, sf, cr, now_samples);
             uint64_t armed = atomic_fetch_add(&g_focus_pool_promote_assigned, 1) + 1;
             pthread_mutex_unlock(&g_focus_pool_mu);
             /* Throttle stderr noise: log first 5, then every 25th. */
@@ -1023,6 +1044,11 @@ static void on_wideband_preamble_lock(int sf, int cr, int bw_hz,
     intptr_t channel_id = (intptr_t)user;
     if (channel_id < 0 || channel_id >= CHANNELIZER_MAX_CHANNELS) return;
     uint64_t now = __atomic_load_n(&g_samples_total, __ATOMIC_RELAXED);
+    /* TDOA anchor: record where in the SDR-rate stream this wideband
+     * channel's preamble locked. Frame emit reads this back so JSON
+     * carries an integer sample index per packet. */
+    __atomic_store_n(&g_chan_stats[channel_id].preamble_lock_sample_idx,
+                     now, __ATOMIC_RELAXED);
 
     /* Pool mode: any wideband slot promotes, optionally filtered by
      * the freq allowlist and the SNR floor. The SNR gate stops the
