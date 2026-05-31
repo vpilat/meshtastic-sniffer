@@ -99,6 +99,15 @@ void focused_worker_arm_slot(focused_worker_t *w,
                              uint64_t start_sample,
                              double hold_down_s);
 
+/* Same as focused_worker_arm_slot(), but the caller may override the
+ * worker's decoder oversampling for this slot. Pass os_factor=0 to keep
+ * the worker default. */
+void focused_worker_arm_slot_os(focused_worker_t *w,
+                                double channel_hz, int bw_hz,
+                                int sf, int cr, int os_factor,
+                                uint64_t start_sample,
+                                double hold_down_s);
+
 /* Read back the slot the worker is currently configured for. Returns
  * 1 if a slot is set (worker has been armed at least once), 0
  * otherwise. Output pointers are optional. Safe to call from any

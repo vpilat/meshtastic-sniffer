@@ -80,6 +80,7 @@ extern int           opt_focus_rewind_ms;     /* rewind from "now" on promotion 
 extern int           opt_focus_ring_ms;       /* raw-IQ ring history */
 extern char         *opt_focus_freqs_csv;     /* optional allowlist Hz,Hz,... */
 extern double        opt_focus_min_snr_db;    /* drop pool promotions below this SNR */
+extern int           opt_focus_os;            /* 0=auto, otherwise 1/2/4/8 */
 
 /* Meshtastic */
 extern char         *opt_region;          /* "US", "EU_868", ... */

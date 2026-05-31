@@ -41,12 +41,13 @@ A startup banner reports what's covered:
 
 | Flag | Default | What it does |
 | --- | --- | --- |
-| `--deep-decode=off\|auto` | `off` | Master switch. `auto` enables the ring buffer and worker pool. |
+| `--deep-decode=off\|auto` | `auto` | Master switch. `auto` enables the ring buffer and worker pool. |
 | `--focus-workers=N` | `2` | Pool size, 1..4. Each worker runs a per-slot DDC + LoRa decoder. |
 | `--focus-hold-s=S` | `5` | Seconds of frame inactivity before a worker idles back. |
 | `--focus-rewind-ms=N` | `20` | How far back in the ring to rewind from a preamble lock. |
 | `--focus-ring-ms=N` | `500` | Raw-IQ ring buffer history depth. |
 | `--focus-min-snr-db=N` | `6` | Drop preamble locks below this SNR. Wideband decode is unaffected. |
+| `--focus-os=N\|auto` | `auto` | Focused decoder oversampling. Auto picks a per-slot value from the sensitivity guardrails. |
 | `--focus-freqs=Hz,Hz,...` | (none) | Restrict the pool to specific frequencies. Default: any slot can promote. |
 
 When a worker can't keep up with the live sample rate, it disarms itself and counts the event as `samples_skipped` rather than continuing with a corrupted sample stream. `dropped_busy` and `below_snr` counters at shutdown surface what the pool turned away.

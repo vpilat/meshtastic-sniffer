@@ -141,6 +141,7 @@ static int               g_focus_pool_size = 0;
 static int               g_focus_pool_cfg_size = 0;     /* env value */
 static double            g_focus_pool_hold_down_s = 5.0;
 static int               g_focus_pool_rewind_ms = 20;
+static int               g_focus_os_factor = 0;          /* 0 = per-slot auto */
 static int               g_focus_pool_inited = 0;
 static pthread_mutex_t   g_focus_pool_mu = PTHREAD_MUTEX_INITIALIZER;
 /* Optional frequency allowlist (decimal Hz, comma-separated). Empty
@@ -341,7 +342,7 @@ static void process_sample_buf(sample_buf_t *buf)
                 .bw_hz         = (int)bw_hz,
                 .sf            = sf,
                 .cr            = cr,
-                .os_factor     = 1,
+                .os_factor     = g_focus_os_factor ? g_focus_os_factor : 1,
                 .sdr_center_hz = (double)center_freq,
                 .sdr_samp_rate = samp_rate,
                 .ring          = g_iq_ring,
@@ -389,7 +390,7 @@ static void process_sample_buf(sample_buf_t *buf)
                 .bw_hz         = 0,
                 .sf            = 0,
                 .cr            = 0,
-                .os_factor     = 1,
+                .os_factor     = g_focus_os_factor ? g_focus_os_factor : 1,
                 .sdr_center_hz = (double)center_freq,
                 .sdr_samp_rate = samp_rate,
                 .ring          = g_iq_ring,
@@ -433,7 +434,7 @@ static void process_sample_buf(sample_buf_t *buf)
             .bw_hz         = g_focused_auto_bw_hz,
             .sf            = g_focused_auto_sf,
             .cr            = g_focused_auto_cr,
-            .os_factor     = 1,
+            .os_factor     = g_focus_os_factor ? g_focus_os_factor : 1,
             .sdr_center_hz = (double)center_freq,
             .sdr_samp_rate = samp_rate,
             .ring          = g_iq_ring,
@@ -932,6 +933,28 @@ static void focus_pool_stamp_chan_stats(int worker_idx, double freq_hz,
     /* preset_name was set to "FocusedPool" at spawn; leave it. */
 }
 
+static int focus_os_for_slot(int bw_hz, int sf, int cr)
+{
+    (void)cr;
+    if (g_focus_os_factor == 1 || g_focus_os_factor == 2 ||
+        g_focus_os_factor == 4 || g_focus_os_factor == 8)
+        return g_focus_os_factor;
+
+    /* Auto policy from focused direct-DDC SFO=25 measurements:
+     * SF7/BW250 and SF9/BW250 need os4; SF10/SF11/BW250 need os8;
+     * BW500 ShortTurbo/LongTurbo prefer os2 on common 20/26 Msps rates.
+     * Other slots keep os1 unless they are long-SF narrowband, where os8
+     * remains exact at 20/26 Msps and preserves the long-range margin. */
+    if (bw_hz == 500000) return 2;
+    if (bw_hz == 250000) {
+        if (sf >= 10) return 8;
+        if (sf == 7 || sf == 9) return 4;
+        return 1;
+    }
+    if (bw_hz == 125000 && sf >= 11) return 8;
+    return 1;
+}
+
 /* Pool-mode dispatcher: route a wideband preamble lock to the pool. */
 static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
                             uint64_t now_samples)
@@ -941,6 +964,7 @@ static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
                                   * samp_rate / 1000.0);
     uint64_t start = (now_samples > rewind) ? (now_samples - rewind) : 0;
     double   hd    = g_focus_pool_hold_down_s;
+    int      os    = focus_os_for_slot(bw_hz, sf, cr);
 
     uint64_t total = atomic_fetch_add(&g_focus_pool_promote_total, 1) + 1;
     pthread_mutex_lock(&g_focus_pool_mu);
@@ -953,7 +977,7 @@ static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
         if (focused_worker_current_slot(w, &cf, &cb, &csf, &ccr) &&
             cf == freq_hz && cb == bw_hz && csf == sf && ccr == cr &&
             focused_worker_state(w) != FOCUSED_STATE_IDLE) {
-            focused_worker_arm_slot(w, freq_hz, bw_hz, sf, cr, start, hd);
+            focused_worker_arm_slot_os(w, freq_hz, bw_hz, sf, cr, os, start, hd);
             focus_pool_stamp_chan_stats(i, freq_hz, bw_hz, sf, cr);
             atomic_fetch_add(&g_focus_pool_promote_matched, 1);
             pthread_mutex_unlock(&g_focus_pool_mu);
@@ -965,7 +989,7 @@ static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
         focused_worker_t *w = g_focus_pool[i];
         if (!w) continue;
         if (focused_worker_state(w) == FOCUSED_STATE_IDLE) {
-            focused_worker_arm_slot(w, freq_hz, bw_hz, sf, cr, start, hd);
+            focused_worker_arm_slot_os(w, freq_hz, bw_hz, sf, cr, os, start, hd);
             focus_pool_stamp_chan_stats(i, freq_hz, bw_hz, sf, cr);
             uint64_t armed = atomic_fetch_add(&g_focus_pool_promote_assigned, 1) + 1;
             pthread_mutex_unlock(&g_focus_pool_mu);
@@ -973,11 +997,11 @@ static void promote_to_pool(double freq_hz, int bw_hz, int sf, int cr,
             if (armed <= 5 || (armed % 25) == 0) {
                 fprintf(stderr,
                         "focus-pool: assign #%llu (total promotions=%llu) "
-                        "worker[%d] <- %.3fMHz BW=%d SF=%d CR=4/%d "
+                        "worker[%d] <- %.3fMHz BW=%d SF=%d CR=4/%d os=%d "
                         "start=%llu\n",
                         (unsigned long long)armed,
                         (unsigned long long)total, i,
-                        freq_hz / 1e6, bw_hz, sf, cr,
+                        freq_hz / 1e6, bw_hz, sf, cr, os,
                         (unsigned long long)start);
             }
             return;
@@ -3166,6 +3190,7 @@ static int run_live(void)
         g_focus_pool_hold_down_s = opt_focus_hold_s;
         g_focus_pool_rewind_ms   = opt_focus_rewind_ms;
         g_focus_pool_min_snr_db  = opt_focus_min_snr_db;
+        g_focus_os_factor        = opt_focus_os;
         /* Parse --focus-freqs CSV (CLI). */
         if (opt_focus_freqs_csv) {
             char buf[512];
@@ -3239,6 +3264,18 @@ static int run_live(void)
     {
         const char *e = getenv("MESHTASTIC_FOCUS_MIN_SNR_DB");
         if (e && *e) g_focus_pool_min_snr_db = atof(e);
+    }
+    /* Hidden env override for focus decoder oversampling. */
+    {
+        const char *e = getenv("MESHTASTIC_FOCUS_OS");
+        if (e && *e) {
+            if (!strcasecmp(e, "auto")) g_focus_os_factor = 0;
+            else {
+                int n = atoi(e);
+                if (n == 1 || n == 2 || n == 4 || n == 8)
+                    g_focus_os_factor = n;
+            }
+        }
     }
 
     /* Hidden env override for the pool size + timing trio. */
@@ -3321,10 +3358,14 @@ static int run_live(void)
         if (opt_deep_decode == DEEP_DECODE_AUTO) {
             fprintf(stderr,
                     "[coverage] deep-decode: auto, workers=%d, ring=%dms, "
-                    "rewind=%dms, hold=%.1fs, min-snr=%.1fdB%s\n",
+                    "rewind=%dms, hold=%.1fs, min-snr=%.1fdB, focus-os=%s%s\n",
                     g_focus_pool_cfg_size, (int)g_iq_ring_ms,
                     g_focus_pool_rewind_ms, g_focus_pool_hold_down_s,
                     g_focus_pool_min_snr_db,
+                    g_focus_os_factor == 0 ? "auto" :
+                    (g_focus_os_factor == 1 ? "1" :
+                     g_focus_os_factor == 2 ? "2" :
+                     g_focus_os_factor == 4 ? "4" : "8"),
                     g_focus_pool_freqs_n > 0 ? ", allowlisted" : "");
             if (g_focus_pool_freqs_n > 0) {
                 fprintf(stderr, "[coverage] focus-freqs:");

@@ -47,6 +47,7 @@ struct focused_worker {
     int    cur_bw_hz;
     int    cur_sf;
     int    cur_cr;
+    int    cur_os_factor;
     int    cur_set;            /* 1 once a slot has been configured */
     /* Pending slot fields written by focused_worker_arm_slot(); the
      * worker thread observes them along with arm_pending and copies
@@ -55,6 +56,7 @@ struct focused_worker {
     int    pending_bw_hz;
     int    pending_sf;
     int    pending_cr;
+    int    pending_os_factor;
     int    pending_slot_change;
 
     /* DDC chain. The mixer runs as a phasor iteration: each input
@@ -217,7 +219,8 @@ static void focused_process_chunk(focused_worker_t *w,
  * destroy + recreate cycle hit an allocator error). */
 static int focused_apply_slot_locked(focused_worker_t *w)
 {
-    int os    = w->cfg.os_factor;
+    int os    = w->pending_os_factor > 0 ? w->pending_os_factor : w->cfg.os_factor;
+    if (!(os == 1 || os == 2 || os == 4 || os == 8)) os = 1;
     double sr = w->cfg.sdr_samp_rate;
     int decim = (int)(sr / (double)(os * w->pending_bw_hz) + 0.5);
     if (decim <= 0) {
@@ -229,6 +232,7 @@ static int focused_apply_slot_locked(focused_worker_t *w)
     w->cur_bw_hz      = w->pending_bw_hz;
     w->cur_sf         = w->pending_sf;
     w->cur_cr         = w->pending_cr;
+    w->cur_os_factor  = os;
     w->cur_set        = 1;
     w->mix_inc = -2.0 * M_PI * (w->cur_channel_hz - w->cfg.sdr_center_hz) / sr;
     /* Precompute the single-sample rotation factor; the per-sample
@@ -301,9 +305,10 @@ static void *focused_thread(void *arg)
                 }
                 fprintf(stderr,
                         "focused[%s]: slot reconfigured -> ch=%.3fMHz "
-                        "BW=%dkHz SF=%d CR=4/%d\n",
+                        "BW=%dkHz SF=%d CR=4/%d os=%d\n",
                         w->label_buf, w->cur_channel_hz / 1e6,
-                        w->cur_bw_hz / 1000, w->cur_sf, w->cur_cr);
+                        w->cur_bw_hz / 1000, w->cur_sf, w->cur_cr,
+                        w->cur_os_factor);
             }
             pthread_mutex_unlock(&w->cfg_mu);
 
@@ -481,6 +486,7 @@ focused_worker_t *focused_worker_create(const focused_cfg_t *cfg)
         w->pending_bw_hz      = cfg->bw_hz;
         w->pending_sf         = cfg->sf;
         w->pending_cr         = cfg->cr;
+        w->pending_os_factor  = cfg->os_factor;
         int rc = focused_apply_slot_locked(w);
         pthread_mutex_unlock(&w->cfg_mu);
         if (rc != 0) {
@@ -552,6 +558,16 @@ void focused_worker_arm_slot(focused_worker_t *w,
                              uint64_t start_sample,
                              double hold_down_s)
 {
+    focused_worker_arm_slot_os(w, channel_hz, bw_hz, sf, cr, 0,
+                               start_sample, hold_down_s);
+}
+
+void focused_worker_arm_slot_os(focused_worker_t *w,
+                                double channel_hz, int bw_hz,
+                                int sf, int cr, int os_factor,
+                                uint64_t start_sample,
+                                double hold_down_s)
+{
     if (!w) return;
     pthread_mutex_lock(&w->cfg_mu);
     /* Fill defaults from current slot when caller passes 0 to keep a
@@ -562,16 +578,20 @@ void focused_worker_arm_slot(focused_worker_t *w,
     int    next_bw = (bw_hz      >  0 ) ? bw_hz      : w->cur_bw_hz;
     int    next_sf = (sf         >  0 ) ? sf         : w->cur_sf;
     int    next_cr = (cr         >  0 ) ? cr         : w->cur_cr;
+    int    next_os = (os_factor  >  0 ) ? os_factor  : (w->cur_set ? w->cur_os_factor
+                                                                    : w->cfg.os_factor);
     int slot_changed = !w->cur_set ||
                        next_ch != w->cur_channel_hz ||
                        next_bw != w->cur_bw_hz ||
                        next_sf != w->cur_sf ||
-                       next_cr != w->cur_cr;
+                       next_cr != w->cur_cr ||
+                       next_os != w->cur_os_factor;
     if (slot_changed) {
         w->pending_channel_hz = next_ch;
         w->pending_bw_hz      = next_bw;
         w->pending_sf         = next_sf;
         w->pending_cr         = next_cr;
+        w->pending_os_factor  = next_os;
         w->pending_slot_change = 1;
     }
     pthread_mutex_unlock(&w->cfg_mu);
