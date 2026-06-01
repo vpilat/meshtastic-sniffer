@@ -39,8 +39,15 @@ type Frame struct {
 	StationLat     float64 `json:"station_lat,omitempty"`
 	StationLon     float64 `json:"station_lon,omitempty"`
 	StationAltM    float64 `json:"station_alt_m,omitempty"`
-	StationTNs     uint64  `json:"station_t_ns,omitempty"`     /* sensor capture timestamp (ns since epoch) */
+	StationTNs     uint64  `json:"station_t_ns,omitempty"`     /* sensor capture timestamp (ns since epoch) -- frame-emit time */
 	StationTAccNs  uint32  `json:"station_t_acc_ns,omitempty"` /* clock-discipline class for mlat weighting */
+	/* TDOA software-lock timestamp: CLOCK_REALTIME at the moment the
+	 * sensor detected the preamble. Strictly earlier in the pipeline
+	 * than station_t_ns (which the sensor stamps after the whole
+	 * frame demodulates), so much closer to the actual time-of-arrival
+	 * for mlat purposes. NOT a sample-derived GPSDO-grade TOA; PFB /
+	 * scheduling / buffering latency are still baked in. */
+	PreambleLockTNs uint64 `json:"preamble_lock_t_ns,omitempty"`
 	From           string  `json:"from,omitempty"`
 	PacketID       uint32  `json:"packet_id,omitempty"`
 	ChannelHash    uint8   `json:"channel_hash,omitempty"`     /* 1-byte routing hash from radio header */
@@ -57,15 +64,16 @@ type Frame struct {
 
 // Observation is one (station, frame) tuple inside a cluster.
 type Observation struct {
-	Station       string
-	StationLat    float64
-	StationLon    float64
-	StationAltM   float64
-	StationTNs    uint64
-	StationTAccNs uint32
-	SnrDB         float64
-	RssiDB        float64
-	At            time.Time
+	Station         string
+	StationLat      float64
+	StationLon      float64
+	StationAltM     float64
+	StationTNs      uint64 /* frame-emit timestamp ("frame" class) */
+	StationTAccNs   uint32
+	PreambleLockTNs uint64 /* preamble-detect timestamp ("software_lock" class) */
+	SnrDB           float64
+	RssiDB          float64
+	At              time.Time
 }
 
 // Cluster groups same-packet observations from one transmission.
@@ -286,7 +294,8 @@ loop:
 			}
 			c.Observations = append(c.Observations, Observation{
 				Station: station, StationLat: f.StationLat, StationLon: f.StationLon,
-				StationAltM: f.StationAltM, StationTNs: f.StationTNs, StationTAccNs: f.StationTAccNs,
+				StationAltM: f.StationAltM, StationTNs: f.StationTNs,
+				StationTAccNs: f.StationTAccNs, PreambleLockTNs: f.PreambleLockTNs,
 				SnrDB: f.SnrDB, RssiDB: f.RssiDB, At: now,
 			})
 		case now := <-tick.C:
@@ -340,7 +349,10 @@ func tryGeolocate(c *Cluster) []byte {
 		}
 		usable = append(usable, MlatObservation{
 			StationName: o.Station, Lat: o.StationLat, Lon: o.StationLon,
-			AltM: o.StationAltM, TNs: o.StationTNs, TAccNs: o.StationTAccNs,
+			AltM:    o.StationAltM,
+			TNs:     o.StationTNs,
+			LockTNs: o.PreambleLockTNs,
+			TAccNs:  o.StationTAccNs,
 		})
 	}
 	if len(usable) < 3 {
@@ -351,23 +363,27 @@ func tryGeolocate(c *Cluster) []byte {
 		return nil
 	}
 	out := struct {
-		Event        string  `json:"event"`
-		From         string  `json:"from"`
-		PacketID     uint32  `json:"packet_id"`
-		Lat          float64 `json:"lat"`
-		Lon          float64 `json:"lon"`
-		UncertaintyM float64 `json:"uncertainty_m"`
-		StationCount int     `json:"station_count"`
-		Iterations   int     `json:"iterations"`
+		Event           string  `json:"event"`
+		From            string  `json:"from"`
+		PacketID        uint32  `json:"packet_id"`
+		Lat             float64 `json:"lat"`
+		Lon             float64 `json:"lon"`
+		UncertaintyM    float64 `json:"uncertainty_m"`
+		StationCount    int     `json:"station_count"`
+		Iterations      int     `json:"iterations"`
+		TimestampClass  string  `json:"timestamp_class"`            /* weakest class consumed */
+		Degraded        bool    `json:"timestamp_class_degraded,omitempty"` /* mixed classes */
 	}{
-		Event:        "GEOLOCATED",
-		From:         c.Frame.From,
-		PacketID:     c.Frame.PacketID,
-		Lat:          res.Lat,
-		Lon:          res.Lon,
-		UncertaintyM: res.UncertaintyM,
-		StationCount: res.StationCount,
-		Iterations:   res.Iterations,
+		Event:          "GEOLOCATED",
+		From:           c.Frame.From,
+		PacketID:       c.Frame.PacketID,
+		Lat:            res.Lat,
+		Lon:            res.Lon,
+		UncertaintyM:   res.UncertaintyM,
+		StationCount:   res.StationCount,
+		Iterations:     res.Iterations,
+		TimestampClass: res.WorstTimestampCls.String(),
+		Degraded:       res.Degraded,
 	}
 	b, err := json.Marshal(out)
 	if err != nil {

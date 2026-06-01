@@ -237,6 +237,16 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
         if (ev->sample_rate_sps) {
             jw_field_u64(j, "sample_rate_sps", ev->sample_rate_sps);
         }
+        /* Software-lock TOA timestamp (CLOCK_REALTIME stamped at the
+         * moment preamble lock was detected). Strictly earlier in the
+         * pipeline than station_t_ns (which the dedup ring stamps
+         * after frame demod completes). Fusion uses this as a
+         * timestamp_class=software_lock source when present; it is
+         * not a sample-derived GPSDO-grade TOA. */
+        if (ev->preamble_lock_t_ns) {
+            jw_field_u64(j, "preamble_lock_t_ns",
+                         ev->preamble_lock_t_ns);
+        }
     }
 
     /* Radio-layer fields: which physical preset/SF/CR/BW the frame arrived on.

@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -1335,6 +1336,22 @@ static void state_tick(lora_decoder_t *d)
                     d->stream_chunk_anchor +
                     (uint64_t)d->samples_in_chunk *
                     (uint64_t)d->stream_step_per_sample;
+                /* TDOA: also stash a software-lock wall-clock at the
+                 * moment of lock-detect. On a GPSDO-disciplined host
+                 * CLOCK_REALTIME is sub-microsecond; this is strictly
+                 * better than the dedup-emit timestamp the existing
+                 * station_t_ns field uses (which fires after the
+                 * whole frame demods). NOT a sample-derived TOA --
+                 * PFB / scheduling / buffering latency is still in
+                 * the picture; fusion labels this as
+                 * timestamp_class=software_lock, not "precise". */
+                {
+                    struct timespec ts;
+                    clock_gettime(CLOCK_REALTIME, &ts);
+                    d->meta.preamble_lock_t_ns =
+                        (uint64_t)ts.tv_sec * 1000000000ULL +
+                        (uint64_t)ts.tv_nsec;
+                }
                 /* Fire the preamble-lock callback. Subscribers (the
                  * scan-then-focus pool, scanners, telemetry) get the
                  * event before header decode starts -- the right

@@ -90,6 +90,14 @@ typedef struct mesh_event {
      * Read-only metadata; the decoder does not feed this back into
      * STO/CFO/SFO. 0 when no fractional estimate was available. */
     float          preamble_lock_sample_frac;
+    /* CLOCK_REALTIME at the moment preamble lock was detected.
+     * Strictly earlier than station_t_ns (which the dedup ring
+     * stamps when the first replica is buffered, after the frame
+     * has fully demodulated). Fusion uses this as a software-lock
+     * timing source when present; it is not a sample-derived
+     * GPSDO-grade TOA -- PFB / scheduling / buffering latency are
+     * still baked in. 0 when not populated. */
+    uint64_t       preamble_lock_t_ns;
 
     /* Inner Data envelope (when decrypted == true) */
     uint32_t       portnum;

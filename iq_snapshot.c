@@ -198,10 +198,18 @@ static int write_sidecar(const char *json_path,
     if (!f) return -1;
     /* Hand-rolled JSON to avoid pulling in a library. Floats use %.6f
      * which is plenty for SNR / sample-rate. */
+    /* Canonical TDOA timestamp name across event JSON and sidecar is
+     * preamble_lock_t_ns. Sidecar continues to emit the existing
+     * station_t_ns (pre-this-branch, that field carried the lock-time
+     * value -- not the dedup-emit time the event JSON's station_t_ns
+     * field uses; do not change that semantics here to avoid breaking
+     * any on-disk consumers). preamble_lock_t_ns is added as the
+     * canonical name a fusion consumer should prefer going forward. */
     fprintf(f,
             "{\n"
             "  \"station_id\": \"%s\",\n"
             "  \"station_t_ns\": %" PRIu64 ",\n"
+            "  \"preamble_lock_t_ns\": %" PRIu64 ",\n"
             "  \"station_t_acc_ns\": %u,\n"
             "  \"preset\": \"%s\",\n"
             "  \"sf\": %d,\n"
@@ -216,6 +224,7 @@ static int write_sidecar(const char *json_path,
             "  \"format\": \"%s\"\n"
             "}\n",
             g.cfg.station_id ? g.cfg.station_id : "",
+            ev->lock_t_ns,
             ev->lock_t_ns,
             g.cfg.station_t_acc_ns,
             ev->preset_name,

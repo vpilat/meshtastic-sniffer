@@ -62,6 +62,16 @@ typedef struct lora_frame_meta {
      * roughly [-step/2, +step/2] SDR samples; 0 on synthetic feeds
      * that never set a stream cursor. */
     float    preamble_lock_sample_frac;
+    /* TDOA: CLOCK_REALTIME at the moment preamble_locked_once
+     * transitioned. This is a software-lock timestamp -- much earlier
+     * than the frame-emit timestamp the dedup ring stamps but later
+     * than the actual sample arrival at the SDR (PFB / buffering /
+     * scheduler latency are baked in). Fusion uses this as
+     * "timestamp_class=software_lock" when present, falling back to
+     * the dedup-emit station_t_ns otherwise. 0 if the decoder was
+     * never reached (synthetic feeds that don't fire a preamble
+     * callback). */
+    uint64_t preamble_lock_t_ns;
 } lora_frame_meta_t;
 
 typedef void (*lora_frame_cb_t)(const uint8_t *payload, size_t payload_len,
