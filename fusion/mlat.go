@@ -85,21 +85,20 @@ type MlatObservation struct {
 	TAccNs       uint32 // station_t_acc_ns (clock-discipline class)
 	// PrecomputedClass is the timestamp class the caller has already
 	// resolved for this observation (e.g. via ClockSync.CorrectAndClassify).
-	// When set to TimestampSample (the zero value) the solver falls back
-	// to inferring the class from LockTNs/TNs presence -- preserves the
-	// pre-clock-sync code paths that don't set this field. Set
-	// explicitly to TimestampSync when clock-sync has corrected LockTNs
-	// onto a converged network reference.
-	PrecomputedClass TimestampClass
+	// Only consulted when HasPrecomputedClass is true. Keeping the
+	// "is set" flag explicit means TimestampSample (the zero value)
+	// can be a real class -- which it will become for GPSDO / sample-
+	// epoch observations in the next tier of work.
+	PrecomputedClass    TimestampClass
+	HasPrecomputedClass bool
 }
 
 // resolveTNs picks the best available timestamp from an observation
-// and returns the value plus its class. When PrecomputedClass is set
-// (non-zero -- note that TimestampSample is the zero value and means
-// "infer"), it wins. Otherwise we fall back to inferring from
+// and returns the value plus its class. When HasPrecomputedClass is
+// true, the caller-supplied class wins. Otherwise infer from
 // LockTNs/TNs presence: software_lock > frame.
 func (o MlatObservation) resolveTNs() (uint64, TimestampClass) {
-	if o.PrecomputedClass != TimestampSample {
+	if o.HasPrecomputedClass {
 		if o.LockTNs != 0 {
 			return o.LockTNs, o.PrecomputedClass
 		}

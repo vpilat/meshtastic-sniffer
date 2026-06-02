@@ -355,6 +355,22 @@ def case_anchor_observed_convergence_and_target():
                f"clock_sync_pair_count={late.get('clock_sync_pair_count')}, want >=1")
         _check(late.get("clock_sync_anchor_count", 0) >= 1,
                f"clock_sync_anchor_count={late.get('clock_sync_anchor_count')}, want >=1")
+        # POSITION ACCURACY: the whole point of clock-sync is producing a
+        # better geolocation, not just a prettier label. Verify the
+        # post-sync position is within tolerance of the injected TARGET
+        # coordinates, AND that the pre-sync solve was worse (or at
+        # least no better). Per-station offsets injected at the top of
+        # this test are 0/50us/-30us; without clock-sync those map to
+        # tens of km of position error; with clock-sync they should
+        # collapse to sub-100 m.
+        err_late = haversine_m(late["lat"], late["lon"], TARGET["lat"], TARGET["lon"])
+        _check(err_late < 250.0,
+               f"post-sync position error {err_late:.1f} m too high; "
+               f"injected offsets should have been recovered. solve={late}")
+        err_early = haversine_m(early["lat"], early["lon"], TARGET["lat"], TARGET["lon"])
+        _check(err_late <= err_early,
+               f"post-sync error {err_late:.1f}m should be <= pre-sync {err_early:.1f}m; "
+               f"clock-sync provided no benefit")
         # No GEOLOCATED for the anchor itself.
         for ev in fusion.of_type("GEOLOCATED"):
             _check(ev.get("from") != ANCHOR["from_id"],

@@ -468,10 +468,16 @@ func (cs *ClockSync) CorrectAndClassify(obs Observation, refStation string) (uin
 		return obs.PreambleLockTNs, TimestampSoftwareLock
 	}
 	// Shift this observation's time onto the reference station's clock.
-	// po.MedianNs is signed: (po.B time - po.A time). If this obs is on
-	// po.A side, subtract; if on po.B side, add. (Equivalently: shift
-	// THIS observation by the offset that makes it match what refStation
-	// would have measured.)
+	// po.MedianNs is signed as (po.B's local time - po.A's local time)
+	// when both heard the same anchor packet. To rebase obs onto
+	// refStation:
+	//   - if obs is on the po.A side and refStation is po.B, obs is
+	//     "earlier" on its own clock than refStation would have read --
+	//     ADD MedianNs to align upward to refStation's frame.
+	//   - if obs is on the po.B side and refStation is po.A, obs is
+	//     "later" on its own clock -- SUBTRACT MedianNs.
+	// (The previous wording of this comment had the direction inverted;
+	// the code below is correct, the comment is now the corrected version.)
 	corrected := int64(obs.PreambleLockTNs)
 	if obs.Station == po.A && refStation == po.B {
 		corrected += int64(po.MedianNs)
@@ -579,12 +585,16 @@ func (cs *ClockSync) PairSnapshotByStations(a, b string) *PairSnapshot {
 	if !po.LastUpdate.IsZero() {
 		ageS = time.Since(po.LastUpdate).Seconds()
 	}
+	// Report the now-evaluated status (uses pairStatusNow), not the
+	// last-write-time po.Status; otherwise a dashboard reading this
+	// snapshot would see "converged" on a pair whose samples have
+	// already aged out.
 	return &PairSnapshot{
 		A: po.A, B: po.B,
 		MedianNs:       po.MedianNs,
 		MadNs:          po.MadNs,
 		AnchorEvents:   po.AnchorEvents,
-		Status:         po.Status.String(),
+		Status:         pairStatusNow(po, cs.config).String(),
 		LastUpdateSAgo: ageS,
 	}
 }

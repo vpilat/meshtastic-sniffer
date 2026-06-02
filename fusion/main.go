@@ -433,17 +433,20 @@ func tryGeolocate(c *Cluster) []byte {
 		// Apply clock-sync correction when available; the returned
 		// class drives the MlatResult's per-observation labeling.
 		lockTNs := o.PreambleLockTNs
-		precClass := TimestampSample // zero value = "infer" for the solver
+		var precClass TimestampClass
+		hasClass := false
 		if globalClockSync != nil && refStation != "" {
 			lockTNs, precClass = globalClockSync.CorrectAndClassify(o, refStation)
+			hasClass = true
 		}
 		usable = append(usable, MlatObservation{
 			StationName: o.Station, Lat: o.StationLat, Lon: o.StationLon,
-			AltM:             o.StationAltM,
-			TNs:              o.StationTNs,
-			LockTNs:          lockTNs,
-			TAccNs:           o.StationTAccNs,
-			PrecomputedClass: precClass,
+			AltM:                o.StationAltM,
+			TNs:                 o.StationTNs,
+			LockTNs:             lockTNs,
+			TAccNs:              o.StationTAccNs,
+			PrecomputedClass:    precClass,
+			HasPrecomputedClass: hasClass,
 		})
 	}
 	if len(usable) < 3 {
@@ -482,10 +485,12 @@ func tryGeolocate(c *Cluster) []byte {
 				}
 			}
 		}
-		// Tally anchors that contributed to any converged pair touching this cluster's stations.
+		// Tally anchors that contributed to any pair STILL converged at
+		// read time (uses pairStatusNow so a stale pair doesn't get
+		// credited for the anchor that fed it minutes ago).
 		globalClockSync.mu.RLock()
 		for _, po := range globalClockSync.pairs {
-			if po.Status != ClockSyncConverged {
+			if pairStatusNow(po, globalClockSync.config) != ClockSyncConverged {
 				continue
 			}
 			for id := range po.AnchorIDs {
