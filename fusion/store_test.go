@@ -224,3 +224,102 @@ func TestEventStore_SchemaV2(t *testing.T) {
 		t.Errorf("re-open SchemaVersion=%d, want 2", got)
 	}
 }
+
+// TestClusterObservation_RoundTrip writes a few records with different
+// timestamps and reads them back through ReadClusterObservationsRange.
+// Verifies (a) the time-sorted key encoding, (b) JSON marshalling
+// preserves per-station fields, (c) the time-range cursor walks
+// correctly.
+func TestClusterObservation_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	s, err := OpenEventStore(path, 100)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	mk := func(tsNs uint64, from string, pid uint32, n int) *ClusterObservationRecord {
+		rec := &ClusterObservationRecord{
+			From: from, PacketID: pid,
+			ClusterTimeNs:   tsNs,
+			FirstSeenWallNs: tsNs + 1_000_000,
+			Preset:          "MediumFast",
+			SF:              9, CR: 5, BwHz: 250_000,
+			FreqHz:      906_875_000,
+			ChannelName: "LongFast",
+		}
+		for i := 0; i < n; i++ {
+			rec.Observations = append(rec.Observations, ClusterObservationStation{
+				Station:         fmt.Sprintf("sta%d", i),
+				StationLat:      39.0 + float64(i)*0.001,
+				StationLon:      -98.0,
+				StationTNs:      tsNs + 100_000_000,
+				StationTAccNs:   1000,
+				PreambleLockTNs: tsNs - uint64(i)*10,
+				SnrDB:           20.0 - float64(i),
+				RssiDB:          -90.0,
+			})
+		}
+		return rec
+	}
+
+	recs := []*ClusterObservationRecord{
+		mk(1_700_000_000_000_000_000, "!aaaa1111", 100, 3),
+		mk(1_700_000_001_000_000_000, "!bbbb2222", 101, 4),
+		mk(1_700_000_002_000_000_000, "!cccc3333", 102, 2),
+	}
+	for _, rec := range recs {
+		if err := s.WriteClusterObservation(rec); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if n, _ := s.CountClusterObservations(); n != 3 {
+		t.Fatalf("CountClusterObservations=%d, want 3", n)
+	}
+	got, err := s.ReadClusterObservationsRange(0, ^uint64(0))
+	if err != nil {
+		t.Fatalf("read all: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("read all len=%d, want 3", len(got))
+	}
+	for i, want := range recs {
+		if got[i].From != want.From || got[i].PacketID != want.PacketID {
+			t.Errorf("read[%d] = (%s,%d), want (%s,%d)", i, got[i].From, got[i].PacketID, want.From, want.PacketID)
+		}
+		if got[i].ClusterTimeNs != want.ClusterTimeNs {
+			t.Errorf("read[%d].ClusterTimeNs = %d, want %d", i, got[i].ClusterTimeNs, want.ClusterTimeNs)
+		}
+		if len(got[i].Observations) != len(want.Observations) {
+			t.Errorf("read[%d] stations = %d, want %d", i, len(got[i].Observations), len(want.Observations))
+		}
+		for j, sw := range want.Observations {
+			sg := got[i].Observations[j]
+			if sg.Station != sw.Station || sg.StationLat != sw.StationLat || sg.PreambleLockTNs != sw.PreambleLockTNs || sg.SnrDB != sw.SnrDB {
+				t.Errorf("read[%d].Observations[%d] = %+v, want match for %+v", i, j, sg, sw)
+			}
+		}
+	}
+	got, err = s.ReadClusterObservationsRange(1_700_000_000_500_000_000, 1_700_000_001_500_000_000)
+	if err != nil {
+		t.Fatalf("range: %v", err)
+	}
+	if len(got) != 1 || got[0].From != "!bbbb2222" {
+		t.Errorf("range scan got %+v, want exactly the middle record", got)
+	}
+}
+
+func TestClusterObservation_NilStore(t *testing.T) {
+	var s *EventStore
+	if err := s.WriteClusterObservation(&ClusterObservationRecord{From: "!x"}); err != nil {
+		t.Errorf("nil store write: got err %v, want nil", err)
+	}
+	got, err := s.ReadClusterObservationsRange(0, 1)
+	if err != nil || len(got) != 0 {
+		t.Errorf("nil store read: got %v, %v; want nil, nil", got, err)
+	}
+	if n, err := s.CountClusterObservations(); n != 0 || err != nil {
+		t.Errorf("nil store count: got %d, %v; want 0, nil", n, err)
+	}
+}

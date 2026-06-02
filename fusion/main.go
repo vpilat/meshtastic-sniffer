@@ -58,6 +58,14 @@ type Frame struct {
 	HopStart       int     `json:"hop_start,omitempty"`
 	SnrDB          float64 `json:"snr_db,omitempty"`
 	RssiDB         float64 `json:"rssi_db,omitempty"`
+	/* Radio-layer parameters needed for cluster_observations replay
+	 * persistence. Emitted by the sniffer on every frame event since
+	 * the per-slot freq metadata wire-up; safe to leave 0 for older
+	 * feeds. */
+	SF     int    `json:"sf,omitempty"`
+	CR     int    `json:"cr,omitempty"`
+	BwHz   int    `json:"bw_hz,omitempty"`
+	FreqHz uint64 `json:"freq_hz,omitempty"`
 	Decrypted      *bool   `json:"decrypted,omitempty"`
 	PortName       string  `json:"port_name,omitempty"`
 }
@@ -132,6 +140,46 @@ func printCluster(c *Cluster, totalStations int) {
 		c.Frame.From, c.Frame.PacketID, preset, chName,
 		c.Frame.HopLimit, c.Frame.HopStart,
 		len(stations), totalStations, strings.Join(parts, ", "))
+}
+
+// toClusterObservationRecord projects a runtime Cluster into the
+// on-disk shape persisted to the cluster_observations bbolt bucket.
+// ClusterTimeNs is the RF event anchor: the max of per-observation
+// preamble_lock_t_ns when any sniffer published it; falls back to the
+// cluster's first-seen wall-clock for older feeds. Sortable timestamps
+// let the replay path do time-range scans without rewalking the world.
+func toClusterObservationRecord(c *Cluster) *ClusterObservationRecord {
+	rec := &ClusterObservationRecord{
+		From:            c.Frame.From,
+		PacketID:        c.Frame.PacketID,
+		FirstSeenWallNs: uint64(c.FirstSeen.UnixNano()),
+		Preset:          c.Frame.Preset,
+		SF:              c.Frame.SF,
+		CR:              c.Frame.CR,
+		BwHz:            c.Frame.BwHz,
+		FreqHz:          c.Frame.FreqHz,
+		ChannelName:     c.Frame.ChannelName,
+	}
+	for _, o := range c.Observations {
+		rec.Observations = append(rec.Observations, ClusterObservationStation{
+			Station: o.Station, StationLat: o.StationLat, StationLon: o.StationLon,
+			StationAltM:    o.StationAltM,
+			StationTNs:     o.StationTNs,
+			StationTAccNs:  o.StationTAccNs,
+			PreambleLockTNs: o.PreambleLockTNs,
+			SnrDB:          o.SnrDB,
+			RssiDB:         o.RssiDB,
+		})
+		if o.PreambleLockTNs > rec.ClusterTimeNs {
+			rec.ClusterTimeNs = o.PreambleLockTNs
+		}
+	}
+	if rec.ClusterTimeNs == 0 {
+		// Fall back to wall-clock event time when no sniffer supplied
+		// preamble_lock_t_ns (pre-5e9a1fc feeds, or selftest events).
+		rec.ClusterTimeNs = rec.FirstSeenWallNs
+	}
+	return rec
 }
 
 // txEventJSON returns the consolidated cluster as a JSON line for SSE
@@ -368,6 +416,16 @@ loop:
 			ready := flushReady(pending, *window, now)
 			for _, c := range ready {
 				printCluster(c, registry.pool.EndpointCount())
+				/* Persist the cluster's raw evidence so a future
+				 * replay/re-solve has the same per-station inputs the
+				 * live solver consumed. Best-effort: errors are
+				 * logged but never block the live publish path. No-op
+				 * when state DB is not attached. */
+				if store != nil {
+					if err := store.WriteClusterObservation(toClusterObservationRecord(c)); err != nil {
+						log.Printf("cluster_observations: %v", err)
+					}
+				}
 				/* Feed clock-sync with anchor-cluster pair offsets BEFORE
 				 * solving any non-anchor cluster. Clock-sync silently
 				 * skips clusters whose from-id is not in the registry. */

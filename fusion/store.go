@@ -48,6 +48,7 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -293,4 +294,136 @@ func (s *EventStore) Count() (int, error) {
 
 func ensureDir(dir string) error {
 	return os.MkdirAll(dir, 0755)
+}
+
+// ---- cluster_observations: persisted RF evidence for replay ----
+//
+// Each row is one flushed Cluster's worth of station-side observations,
+// frozen so a future replay/re-solve has the same per-station inputs the
+// live solver consumed. The key is sortable by RF event time so the
+// dashboard can scan a time window in one cursor walk.
+
+// ClusterObservationRecord is the on-disk shape of one cluster_observations
+// row. Cluster-level fields up front, per-station array below.
+type ClusterObservationRecord struct {
+	From             string                       `json:"from"`
+	PacketID         uint32                       `json:"packet_id"`
+	ClusterTimeNs    uint64                       `json:"cluster_time_ns"`
+	FirstSeenWallNs  uint64                       `json:"first_seen_wall_ns"`
+	Preset           string                       `json:"preset,omitempty"`
+	SF               int                          `json:"sf,omitempty"`
+	CR               int                          `json:"cr,omitempty"`
+	BwHz             int                          `json:"bw_hz,omitempty"`
+	FreqHz           uint64                       `json:"freq_hz,omitempty"`
+	ChannelName      string                       `json:"channel_name,omitempty"`
+	Observations     []ClusterObservationStation  `json:"observations"`
+}
+
+// ClusterObservationStation is one (station, frame) tuple inside a record.
+// Mirrors the fields the solver consumes plus the SNR/RSSI signal
+// quality that a dashboard wants for the per-event detail panel.
+type ClusterObservationStation struct {
+	Station         string  `json:"station"`
+	StationLat      float64 `json:"station_lat"`
+	StationLon      float64 `json:"station_lon"`
+	StationAltM     float64 `json:"station_alt_m,omitempty"`
+	StationTNs      uint64  `json:"station_t_ns"`
+	StationTAccNs   uint32  `json:"station_t_acc_ns"`
+	PreambleLockTNs uint64  `json:"preamble_lock_t_ns,omitempty"`
+	SnrDB           float64 `json:"snr_db,omitempty"`
+	RssiDB          float64 `json:"rssi_db,omitempty"`
+}
+
+// clusterObsKey encodes a row key sortable by cluster_time_ns ascending.
+// Format: 8 BE bytes of nanoseconds, then ASCII "|<from>|<packet_id>" so
+// (1) ties at the same nanosecond are disambiguated and (2) replay can
+// do bytes.HasPrefix(key, time_prefix) to walk a single instant.
+func clusterObsKey(clusterTimeNs uint64, from string, packetID uint32) []byte {
+	out := make([]byte, 0, 8+1+len(from)+1+10)
+	var ts [8]byte
+	binary.BigEndian.PutUint64(ts[:], clusterTimeNs)
+	out = append(out, ts[:]...)
+	out = append(out, '|')
+	out = append(out, []byte(from)...)
+	out = append(out, '|')
+	out = strconv.AppendUint(out, uint64(packetID), 10)
+	return out
+}
+
+// WriteClusterObservation persists one ClusterObservationRecord. Safe to
+// call on a nil EventStore (no-op, returns nil) so live mode without a
+// state DB stays compatible. Errors are returned but generally the
+// caller logs-and-continues so the live publish path is unaffected.
+func (s *EventStore) WriteClusterObservation(rec *ClusterObservationRecord) error {
+	if s == nil || s.db == nil || rec == nil {
+		return nil
+	}
+	payload, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshal cluster observation: %w", err)
+	}
+	key := clusterObsKey(rec.ClusterTimeNs, rec.From, rec.PacketID)
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(clusterObservationsBucket))
+		if b == nil {
+			return errors.New("cluster_observations bucket missing")
+		}
+		return b.Put(key, payload)
+	})
+}
+
+// ReadClusterObservationsRange returns every record whose ClusterTimeNs
+// falls in [startNs, endNs]. Walk is one cursor pass; the key encoding
+// puts the timestamp first so seeking is O(log N) + iteration.
+//
+// Used by the future replay/re-solve path: "show me everything fusion
+// heard between 14:03:00 and 14:04:00 UTC yesterday."
+func (s *EventStore) ReadClusterObservationsRange(startNs, endNs uint64) ([]ClusterObservationRecord, error) {
+	if s == nil || s.db == nil || endNs < startNs {
+		return nil, nil
+	}
+	var out []ClusterObservationRecord
+	var startKey [8]byte
+	binary.BigEndian.PutUint64(startKey[:], startNs)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(clusterObservationsBucket))
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		for k, v := c.Seek(startKey[:]); k != nil; k, v = c.Next() {
+			if len(k) < 8 {
+				continue
+			}
+			ts := binary.BigEndian.Uint64(k[:8])
+			if ts > endNs {
+				break
+			}
+			var rec ClusterObservationRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("unmarshal cluster observation at ts=%d: %w", ts, err)
+			}
+			out = append(out, rec)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// CountClusterObservations returns the current row count. Useful for the
+// dashboard's "evidence retained" stat and for tests.
+func (s *EventStore) CountClusterObservations() (int, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	var n int
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(clusterObservationsBucket))
+		if b == nil {
+			return nil
+		}
+		n = b.Stats().KeyN
+		return nil
+	})
+	return n, err
 }
