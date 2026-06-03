@@ -425,6 +425,11 @@ func main() {
 		"Expire pair samples older than this; converged pair becomes stale.")
 	clockSyncMaxRSSI := flag.Float64("clock-sync-max-rssi-dbm", -20.0,
 		"RSSI sanity gate: reject anchor observations stronger than this (near-field/saturation).")
+	seedEvidenceDev := flag.Bool("seed-evidence-dev", false,
+		"DEVELOPMENT ONLY: at startup, write a curated set of synthetic clusters / "+
+			"solves / warnings into the state-db so the Evidence tab can be designed "+
+			"with realistic rows before live ZMQ feeds are connected. Loud warning is "+
+			"logged on use; do not enable in production. Requires --state-db.")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr,
 			"Usage: %s [flags] tcp://host1:7008 tcp://host2:7008 ...\n\n"+
@@ -540,6 +545,26 @@ func main() {
 		globalClockSync.SetAnchorWarnings(warnings)
 		for _, w := range warnings {
 			log.Printf("WARN clock-sync: %s", w.Message)
+		}
+	}
+
+	if *seedEvidenceDev {
+		log.Printf("WARNING: --seed-evidence-dev is enabled. Synthetic Evidence-tab " +
+			"fixtures will be written to the state-db. THIS IS DEV-ONLY; do not enable in production.")
+		if store == nil {
+			log.Printf("seed-evidence-dev: --state-db is required; ignoring seed request")
+		} else {
+			// If clock-sync auto-disabled (no anchors declared), bootstrap
+			// a ClockSync object so the seeded anchor-placement warning can
+			// surface via /api/clock-sync/warnings. Dev-only, harmless in
+			// production because the flag is gated.
+			if globalClockSync == nil {
+				log.Printf("seed-evidence-dev: bootstrapping a ClockSync object for warning surface")
+				globalClockSync = NewClockSync(DefaultClockSyncConfig())
+			}
+			if err := seedEvidenceFixtures(store, globalClockSync); err != nil {
+				log.Printf("seed-evidence-dev: %v", err)
+			}
 		}
 	}
 

@@ -99,6 +99,84 @@ button.danger:hover{background:#991b1b}
 .fanout-result{font-family:'SF Mono',Consolas,monospace;font-size:11px;color:#94a3b8;
   background:#1e293b;border-radius:3px;padding:8px 10px;margin-top:6px;white-space:pre-wrap;
   max-height:200px;overflow:auto}
+
+/* Evidence tab. Read-only timeline + per-event detail; first slice has
+ * no replay/re-solve actions. */
+#evidence.tab{padding:0;display:none;flex-direction:column}
+#evidence.tab.active{display:flex}
+#ev-health-strip{display:flex;gap:10px;padding:12px 18px 0 18px;flex-wrap:wrap}
+.ev-card{background:#1e293b;border:1px solid #334155;border-radius:4px;padding:8px 12px;
+  min-width:120px}
+.ev-card .ev-label{color:#64748b;text-transform:uppercase;font-size:10px;letter-spacing:0.06em;
+  font-weight:600;margin-bottom:4px}
+.ev-card .ev-value{font-size:18px;font-variant-numeric:tabular-nums;font-weight:600;color:#e2e8f0}
+.ev-card .ev-sub{color:#94a3b8;font-size:11px;margin-top:2px}
+.ev-state-ready{color:#22c55e}
+.ev-state-degraded{color:#f59e0b}
+.ev-state-not_ready,.ev-state-no_anchor{color:#ef4444}
+.ev-state-stale{color:#a78bfa}
+#ev-warnings{padding:0 18px;margin-top:8px}
+.ev-warn{background:#7f1d1d;color:#fecaca;border:1px solid #b91c1c;border-radius:3px;
+  padding:8px 12px;margin-top:6px;font-size:12px;line-height:1.45}
+.ev-warn b{color:#fff}
+#ev-controls{display:flex;align-items:center;gap:14px;padding:10px 18px}
+#ev-controls .zoom-buttons{display:inline-flex;background:#1e293b;border:1px solid #334155;
+  border-radius:4px;overflow:hidden}
+#ev-controls .zoom-buttons button{background:transparent;color:#64748b;border:none;
+  padding:6px 12px;font-size:12px;cursor:pointer;border-right:1px solid #334155}
+#ev-controls .zoom-buttons button:last-child{border-right:none}
+#ev-controls .zoom-buttons button:hover{color:#94a3b8}
+#ev-controls .zoom-buttons button.active{background:#0f172a;color:#38bdf8}
+#ev-controls .ev-readout{color:#64748b;font-size:11px;font-variant-numeric:tabular-nums}
+#ev-controls .ev-refresh{background:#1e293b;border:1px solid #334155;color:#94a3b8;
+  padding:6px 12px;border-radius:3px;cursor:pointer;font-size:12px}
+#ev-controls .ev-refresh:hover{color:#e2e8f0}
+#ev-main{flex:1;display:flex;gap:0;border-top:1px solid #334155;overflow:hidden}
+#ev-timeline-pane{flex:1;display:flex;flex-direction:column;border-right:1px solid #334155;
+  overflow:hidden;min-width:0}
+#ev-timeline-pane h3{margin:0;padding:10px 14px;font-size:11px;text-transform:uppercase;
+  letter-spacing:0.08em;color:#64748b;border-bottom:1px solid #334155}
+#ev-timeline{flex:1;overflow-y:auto;padding:4px 0}
+#ev-timeline .ev-empty{color:#64748b;padding:30px 18px;text-align:center;font-size:12px}
+.ev-row{display:grid;grid-template-columns:88px 88px 130px 1fr 80px;gap:8px;
+  padding:8px 14px;border-bottom:1px solid #1e293b;cursor:pointer;font-size:12px;
+  align-items:center}
+.ev-row:hover{background:#1e293b}
+.ev-row.selected{background:#0c4a6e;border-left:3px solid #38bdf8;padding-left:11px}
+.ev-row .ev-time{color:#94a3b8;font-variant-numeric:tabular-nums;font-size:11px}
+.ev-row .ev-kind{font-size:10px;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;
+  padding:3px 6px;border-radius:2px;text-align:center}
+.ev-row .ev-kind-anchor{background:#1d4ed8;color:#dbeafe}
+.ev-row .ev-kind-target{background:#1e293b;color:#94a3b8}
+.ev-row .ev-kind-solved{background:#166534;color:#dcfce7}
+.ev-row .ev-kind-degraded{background:#854d0e;color:#fef3c7}
+.ev-row .ev-from{color:#e2e8f0;font-family:'SF Mono',Consolas,monospace;font-size:11px}
+.ev-row .ev-summary{color:#94a3b8;font-size:11px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.ev-row .ev-trust{font-size:10px;text-align:right;text-transform:uppercase;letter-spacing:0.05em;
+  font-weight:600}
+.ev-trust-sample{color:#22c55e}
+.ev-trust-sync{color:#38bdf8}
+.ev-trust-software_lock{color:#f59e0b}
+.ev-trust-frame{color:#fb923c}
+.ev-trust-degraded{color:#ef4444}
+#ev-detail-pane{flex:0 0 380px;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+#ev-detail-pane h3{margin:0;padding:10px 14px;font-size:11px;text-transform:uppercase;
+  letter-spacing:0.08em;color:#64748b;border-bottom:1px solid #334155}
+#ev-detail{flex:1;overflow-y:auto;padding:14px;font-size:12px;color:#cbd5e1}
+#ev-detail .ev-empty{color:#64748b;text-align:center;padding-top:40px;font-size:12px}
+#ev-detail h4{margin:14px 0 6px 0;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;
+  color:#64748b;font-weight:600}
+#ev-detail h4:first-child{margin-top:0}
+#ev-detail .kv{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dotted #1e293b}
+#ev-detail .kv .k{color:#64748b;font-size:11px}
+#ev-detail .kv .v{color:#e2e8f0;font-size:12px;font-variant-numeric:tabular-nums;
+  font-family:'SF Mono',Consolas,monospace}
+#ev-detail table.ev-stations{width:100%;border-collapse:collapse;margin-top:4px;font-size:11px}
+#ev-detail table.ev-stations th{color:#64748b;text-transform:uppercase;font-size:10px;
+  letter-spacing:0.05em;text-align:left;padding:4px 6px;border-bottom:1px solid #334155}
+#ev-detail table.ev-stations td{color:#cbd5e1;padding:4px 6px;border-bottom:1px dotted #1e293b;
+  font-family:'SF Mono',Consolas,monospace;font-size:11px}
 </style></head><body>
 <div id="bar">
   <span class="title">meshtastic-fusion</span>
@@ -110,6 +188,7 @@ button.danger:hover{background:#991b1b}
 <div id="tabs">
   <button id="tab-live" class="active" onclick="showTab('live')">Live</button>
   <button id="tab-activity" onclick="showTab('activity')">Activity</button>
+  <button id="tab-evidence" onclick="showTab('evidence')">Evidence</button>
   <button id="tab-topology" onclick="showTab('topology')">Topology</button>
   <button id="tab-sensors" onclick="showTab('sensors')">Sensors</button>
   <button id="tab-config" onclick="showTab('config')">Config</button>
@@ -135,6 +214,63 @@ button.danger:hover{background:#991b1b}
 
 <div id="activity" class="tab">
   <div id="activity-grid"></div>
+</div>
+
+<div id="evidence" class="tab">
+  <div id="ev-health-strip">
+    <div class="ev-card">
+      <div class="ev-label">TDOA</div>
+      <div class="ev-value" id="ev-tdoa-state">--</div>
+      <div class="ev-sub" id="ev-tdoa-sub">checking</div>
+    </div>
+    <div class="ev-card">
+      <div class="ev-label">Sensors</div>
+      <div class="ev-value" id="ev-sensors-count">0</div>
+      <div class="ev-sub" id="ev-sensors-sub">alive</div>
+    </div>
+    <div class="ev-card">
+      <div class="ev-label">Anchors</div>
+      <div class="ev-value" id="ev-anchors-count">0</div>
+      <div class="ev-sub" id="ev-anchors-sub">declared</div>
+    </div>
+    <div class="ev-card">
+      <div class="ev-label">Clock Pairs</div>
+      <div class="ev-value" id="ev-pairs-count">0</div>
+      <div class="ev-sub" id="ev-pairs-sub">converged</div>
+    </div>
+    <div class="ev-card">
+      <div class="ev-label">DB Rows</div>
+      <div class="ev-value" id="ev-db-clusters">0</div>
+      <div class="ev-sub" id="ev-db-sub">clusters / 0 fixes</div>
+    </div>
+    <div class="ev-card">
+      <div class="ev-label">Schema</div>
+      <div class="ev-value" id="ev-schema">--</div>
+      <div class="ev-sub" id="ev-schema-sub">replay disabled</div>
+    </div>
+  </div>
+  <div id="ev-persisted-banner" style="display:none;padding:10px 18px 0;color:#94a3b8;font-size:12px"></div>
+  <div id="ev-warnings"></div>
+  <div id="ev-controls">
+    <div class="zoom-buttons" id="ev-zoom">
+      <button data-zoom="15m">15m</button>
+      <button data-zoom="1h" class="active">1h</button>
+      <button data-zoom="6h">6h</button>
+      <button data-zoom="24h">24h</button>
+    </div>
+    <span class="ev-readout" id="ev-range-readout">last 1h</span>
+    <button class="ev-refresh" onclick="evidenceRefresh()">Refresh</button>
+  </div>
+  <div id="ev-main">
+    <div id="ev-timeline-pane">
+      <h3>Timeline</h3>
+      <div id="ev-timeline"><div class="ev-empty">Loading…</div></div>
+    </div>
+    <div id="ev-detail-pane">
+      <h3>Detail</h3>
+      <div id="ev-detail"><div class="ev-empty">Click a timeline row to see per-event detail: station participation, clock-sync snapshot, solve summary.</div></div>
+    </div>
+  </div>
 </div>
 
 <div id="topology" class="tab">
@@ -226,11 +362,12 @@ function authUrl(path){
   return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(FUSION_TOKEN);
 }
 function showTab(name){
-  for(const t of ['live','activity','topology','sensors','config']){
+  for(const t of ['live','activity','evidence','topology','sensors','config']){
     document.getElementById(t).classList.toggle('active',t===name);
     document.getElementById('tab-'+t).classList.toggle('active',t===name);
   }
   if(name==='sensors') refreshSensors();
+  if(name==='evidence') evidenceRefresh();
   if(name==='topology') topoStart(); else if (typeof topoStop==='function') topoStop();
   if(name==='live') setTimeout(()=>map.invalidateSize(),60);
 }
@@ -843,6 +980,280 @@ function setStatus(id,msg,ok){
   el.className='hint '+(ok?'status-ok':'status-err');
 }
 function escHtml(s){return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+// ---- Evidence tab ----------------------------------------------------------
+//
+// Read-only view of persisted TDOA evidence: cluster_observations,
+// pair_snapshots, solved_fixes, plus clock-sync warnings. No re-solve
+// actions yet -- this is the trust/inspection surface; replay execution
+// lands in a later commit.
+
+let evidenceZoom = '1h';
+let evidenceData = { summary: null, fixes: [], clusters: [], pairs: [], warnings: [] };
+let evidenceSelected = null; // {kind, id} of the currently-highlighted row
+
+const ZOOM_NS = { '15m': 15*60*1e9, '1h': 60*60*1e9, '6h': 6*60*60*1e9, '24h': 24*60*60*1e9 };
+
+document.querySelectorAll('#ev-zoom button').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    evidenceZoom = b.getAttribute('data-zoom');
+    document.querySelectorAll('#ev-zoom button').forEach(x=>x.classList.toggle('active', x===b));
+    evidenceRefresh();
+  });
+});
+
+async function evidenceFetch(path){
+  try {
+    const r = await fetch(authUrl(path), { headers: authHeaders() });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+async function evidenceRefresh(){
+  const tl = document.getElementById('ev-timeline');
+  tl.innerHTML = '<div class="ev-empty">Loading...</div>';
+  document.getElementById('ev-range-readout').textContent = 'last '+evidenceZoom;
+  const endNs = Date.now() * 1e6; // ms -> ns
+  const startNs = endNs - ZOOM_NS[evidenceZoom];
+  const qs = '?start_ns='+Math.trunc(startNs)+'&end_ns='+Math.trunc(endNs);
+  // Parallel fetch all surfaces.
+  const [summary, fixes, clusters, pairs, warnings] = await Promise.all([
+    evidenceFetch('/api/evidence/summary'),
+    evidenceFetch('/api/evidence/fixes'+qs),
+    evidenceFetch('/api/evidence/clusters'+qs),
+    evidenceFetch('/api/evidence/pairs'+qs),
+    evidenceFetch('/api/clock-sync/warnings'),
+  ]);
+  evidenceData = {
+    summary: summary,
+    fixes: (fixes && fixes.records) || [],
+    clusters: (clusters && clusters.records) || [],
+    pairs: (pairs && pairs.records) || [],
+    warnings: (warnings && warnings.warnings) || [],
+    clockSyncEnabled: warnings ? !!warnings.enabled : false,
+  };
+  evidenceRenderHealth();
+  evidenceRenderWarnings();
+  evidenceRenderTimeline();
+}
+
+function evidenceRenderHealth(){
+  const s = evidenceData.summary;
+  const banner = document.getElementById('ev-persisted-banner');
+  if (s && s.persisted) {
+    document.getElementById('ev-db-clusters').textContent = (s.counts && s.counts.cluster_observations) || 0;
+    document.getElementById('ev-db-sub').textContent =
+      ((s.counts && s.counts.cluster_observations) || 0) + ' clusters / ' +
+      ((s.counts && s.counts.solved_fixes) || 0) + ' fixes';
+    document.getElementById('ev-schema').textContent = 'v' + (s.schema_version || 0);
+    document.getElementById('ev-schema-sub').textContent =
+      s.replay_available ? 'replay available' : 'replay disabled';
+    banner.style.display = 'none';
+  } else {
+    document.getElementById('ev-db-clusters').textContent = '—';
+    document.getElementById('ev-db-sub').textContent = 'no state-db attached';
+    document.getElementById('ev-schema').textContent = '—';
+    document.getElementById('ev-schema-sub').textContent = 'replay disabled';
+    banner.innerHTML = '<b style="color:#fbbf24">Running without --state-db.</b> ' +
+      'The Evidence tab needs a persistent bbolt file to render historical events. ' +
+      'Restart fusion with <code style="color:#cbd5e1">--state-db=/path/to/state.db</code> ' +
+      'and the timeline will populate as anchor clusters and solves land.';
+    banner.style.display = 'block';
+  }
+  // Sensors / anchors / pairs counts come from live state (stations[] and
+  // /api/clock-sync/warnings.enabled). The TDOA state label is a simple
+  // client-side rollup for v1; a backend /api/evidence/summary.tdoa_state
+  // can replace it later if the rule grows complex.
+  const sensorsAlive = Object.keys(stations).length;
+  document.getElementById('ev-sensors-count').textContent = sensorsAlive;
+  // Anchors + converged-pair counts aren't yet exposed by a public API; show
+  // best-effort placeholders until /api/clock-sync/stats lands. Warnings still
+  // indicate clock-sync state.
+  const csOn = evidenceData.clockSyncEnabled;
+  document.getElementById('ev-anchors-sub').textContent = csOn ? 'clock-sync on' : 'clock-sync off';
+  document.getElementById('ev-pairs-sub').textContent = csOn ? 'see warnings' : 'n/a';
+  // TDOA rollup, conservative v1 thresholds:
+  //   NOT_READY if fewer than 3 sensors alive
+  //   NO_ANCHOR if clock-sync disabled / no anchors
+  //   DEGRADED if any anchor warning is active
+  //   READY otherwise
+  let state = 'not_ready', sub = 'sensors < 3';
+  if (sensorsAlive >= 3) {
+    if (!csOn) { state = 'no_anchor'; sub = 'no anchors configured'; }
+    else if (evidenceData.warnings.length > 0) { state = 'degraded'; sub = evidenceData.warnings.length + ' warning(s)'; }
+    else { state = 'ready'; sub = 'sensors + sync ok'; }
+  }
+  const el = document.getElementById('ev-tdoa-state');
+  el.textContent = state.toUpperCase().replace('_',' ');
+  el.className = 'ev-value ev-state-'+state;
+  document.getElementById('ev-tdoa-sub').textContent = sub;
+}
+
+function evidenceRenderWarnings(){
+  const host = document.getElementById('ev-warnings');
+  host.innerHTML = '';
+  for (const w of evidenceData.warnings) {
+    const div = document.createElement('div');
+    div.className = 'ev-warn';
+    const code = w.code || 'warning';
+    div.innerHTML = '<b>['+escHtml(code.toUpperCase())+']</b> ' + escHtml(w.message || '');
+    host.appendChild(div);
+  }
+}
+
+function evidenceRenderTimeline(){
+  const tl = document.getElementById('ev-timeline');
+  tl.innerHTML = '';
+  // Interleave fixes + clusters into one timeline. Fixes have
+  // event_time_ns; clusters have cluster_time_ns. Anchor-cluster vs
+  // target-cluster is distinguished from the fact that solved_fixes
+  // suppress anchors (live event loop suppresses GEOLOCATED for declared
+  // anchors), so any cluster whose (from, pid) matches a solved fix is a
+  // target; the rest are either anchors or insufficient-station targets.
+  const fixByKey = new Map();
+  for (const f of evidenceData.fixes) {
+    fixByKey.set(f.from + '|' + f.packet_id + '|' + (f.emission_seq || 0), f);
+  }
+  const rows = [];
+  for (const c of evidenceData.clusters) {
+    const k = c.from + '|' + c.packet_id + '|' + (c.emission_seq || 0);
+    const fix = fixByKey.get(k);
+    rows.push({
+      timeNs: c.cluster_time_ns,
+      kind: fix ? 'solved' : (c.low_trust ? 'degraded' : 'target'),
+      from: c.from,
+      packetId: c.packet_id,
+      emissionSeq: c.emission_seq || 0,
+      summary: ((c.observations||[]).length) + ' station' +
+        (((c.observations||[]).length === 1) ? '' : 's') +
+        (c.preset ? (' · ' + c.preset) : '') +
+        (c.low_trust ? ' · low-trust' : '') +
+        ((c.station_dupes_suppressed||0) > 0 ? (' · dupes=' + c.station_dupes_suppressed) : ''),
+      trust: fix ? fix.timestamp_class : (c.low_trust ? 'degraded' : ''),
+      cluster: c,
+      fix: fix || null,
+    });
+    if (fix) fixByKey.delete(k);
+  }
+  // Any unmatched fix (anchor cluster wasn't retained, or fix lacks a
+  // cluster row) still shows up so the timeline doesn't lie about solves.
+  for (const fix of fixByKey.values()) {
+    rows.push({
+      timeNs: fix.event_time_ns,
+      kind: 'solved',
+      from: fix.from,
+      packetId: fix.packet_id,
+      emissionSeq: fix.emission_seq || 0,
+      summary: 'solved · ' + (fix.station_count||0) + ' stations · ±' +
+        Math.round(fix.uncertainty_m||0) + ' m',
+      trust: fix.timestamp_class,
+      cluster: null,
+      fix: fix,
+    });
+  }
+  rows.sort((a,b) => Number(b.timeNs) - Number(a.timeNs)); // newest first
+  if (rows.length === 0) {
+    const persisted = evidenceData.summary && evidenceData.summary.persisted;
+    const total = persisted ?
+      ((evidenceData.summary.counts && evidenceData.summary.counts.cluster_observations) || 0) : 0;
+    if (!persisted) {
+      tl.innerHTML = '<div class="ev-empty">Evidence persistence is off. See the banner above.</div>';
+    } else if (total === 0) {
+      tl.innerHTML = '<div class="ev-empty">' +
+        'Waiting for station feeds and anchor observations.<br><br>' +
+        'New events appear here in real time once sniffers connect and ' +
+        'clock-sync is converging. Operator-declared anchors train the clock ' +
+        'graph; everything else becomes a target.' +
+        '</div>';
+    } else {
+      tl.innerHTML = '<div class="ev-empty">' +
+        'No events in the last ' + evidenceZoom + '. ' + total + ' total in the DB — ' +
+        'try a larger zoom.</div>';
+    }
+    return;
+  }
+  for (const r of rows) {
+    const row = document.createElement('div');
+    row.className = 'ev-row';
+    const trustClass = r.trust ? 'ev-trust ev-trust-'+r.trust : 'ev-trust';
+    const trustText = r.trust ? r.trust.toUpperCase() : '';
+    const tstr = (new Date(Number(r.timeNs)/1e6)).toLocaleTimeString([], {hour12:false});
+    row.innerHTML =
+      '<div class="ev-time">'+escHtml(tstr)+'</div>' +
+      '<div class="ev-kind ev-kind-'+r.kind+'">'+escHtml(r.kind)+'</div>' +
+      '<div class="ev-from">'+escHtml(r.from)+(r.emissionSeq>0?(':#'+r.emissionSeq):'')+'</div>' +
+      '<div class="ev-summary">'+escHtml(r.summary)+'</div>' +
+      '<div class="'+trustClass+'">'+escHtml(trustText)+'</div>';
+    const rowKey = r.from + '|' + r.packetId + '|' + r.emissionSeq;
+    row.addEventListener('click', () => evidenceShowDetail(r, row));
+    if (evidenceSelected === rowKey) row.classList.add('selected');
+    tl.appendChild(row);
+  }
+}
+
+function evidenceShowDetail(r, rowEl){
+  // Highlight selected row.
+  document.querySelectorAll('#ev-timeline .ev-row').forEach(x=>x.classList.remove('selected'));
+  rowEl.classList.add('selected');
+  evidenceSelected = r.from + '|' + r.packetId + '|' + r.emissionSeq;
+  const host = document.getElementById('ev-detail');
+  let html = '';
+  html += '<h4>Event</h4>';
+  html += kv('time', new Date(Number(r.timeNs)/1e6).toISOString());
+  html += kv('from', r.from);
+  html += kv('packet_id', String(r.packetId));
+  if (r.emissionSeq > 0) html += kv('emission_seq', String(r.emissionSeq));
+  html += kv('kind', r.kind);
+
+  if (r.fix) {
+    html += '<h4>Solved Fix</h4>';
+    html += kv('lat / lon', r.fix.lat.toFixed(6) + ', ' + r.fix.lon.toFixed(6));
+    html += kv('uncertainty', '±' + (r.fix.uncertainty_m || 0).toFixed(1) + ' m');
+    html += kv('station_count', String(r.fix.station_count || 0));
+    html += kv('iterations', String(r.fix.iterations || 0));
+    html += kv('timestamp_class', (r.fix.timestamp_class || '') +
+      (r.fix.timestamp_class_degraded ? ' (degraded)' : ''));
+    if (r.fix.clock_sync_pair_count > 0) {
+      html += kv('clock_sync_pairs', String(r.fix.clock_sync_pair_count));
+      html += kv('clock_sync_residual', (r.fix.clock_sync_residual_ns||0).toFixed(0) + ' ns');
+      html += kv('clock_sync_anchors', String(r.fix.clock_sync_anchor_count || 0));
+      html += kv('clock_sync_reference', r.fix.clock_sync_reference || '—');
+    }
+    if (r.fix.pair_snapshot_keys_used && r.fix.pair_snapshot_keys_used.length) {
+      html += '<h4>Pair Snapshots Used</h4>';
+      for (const k of r.fix.pair_snapshot_keys_used) {
+        html += '<div class="kv"><span class="k">pair</span><span class="v">'+escHtml(k)+'</span></div>';
+      }
+    }
+  }
+
+  if (r.cluster && r.cluster.observations && r.cluster.observations.length) {
+    html += '<h4>Stations</h4>';
+    html += '<table class="ev-stations"><thead><tr><th>Station</th><th>Lock</th><th>SNR</th></tr></thead><tbody>';
+    for (const o of r.cluster.observations) {
+      const lockNs = o.preamble_lock_t_ns || 0;
+      const lockStr = lockNs > 0 ? new Date(lockNs/1e6).toLocaleTimeString([], {hour12:false}) + '.' + (lockNs % 1000000).toString().padStart(6,'0').slice(0,3) : '—';
+      html += '<tr><td>'+escHtml(o.station||'')+'</td><td>'+escHtml(lockStr)+'</td><td>'+(o.snr_db?o.snr_db.toFixed(1)+' dB':'—')+'</td></tr>';
+    }
+    html += '</tbody></table>';
+    if (r.cluster.station_dupes_suppressed > 0) {
+      html += '<div class="kv" style="margin-top:6px"><span class="k">dupes suppressed</span><span class="v">'+r.cluster.station_dupes_suppressed+'</span></div>';
+    }
+    if (r.cluster.low_trust) {
+      html += '<div class="kv"><span class="k">trust</span><span class="v" style="color:#ef4444">LOW (lock missing for one or more obs)</span></div>';
+    }
+  }
+
+  if (!r.fix && !(r.cluster && r.cluster.observations && r.cluster.observations.length)) {
+    html += '<div class="ev-empty" style="padding-top:20px">No persisted detail for this event yet.</div>';
+  }
+  host.innerHTML = html;
+}
+
+function kv(k,v){
+  return '<div class="kv"><span class="k">'+escHtml(k)+'</span><span class="v">'+escHtml(String(v))+'</span></div>';
+}
 
 // Initial state
 refreshSensors();
