@@ -175,6 +175,14 @@ type ClockSync struct {
 	mu             sync.RWMutex
 	stats          ClockSyncStats
 	anchorWarnings []ClockSyncWarning
+	// lastAnchorObsNs tracks the most recent anchor-cluster event time
+	// (preferred: preamble_lock_t_ns) per station. Used by the clock-step
+	// monotonicity guard in FeedCluster -- if a new anchor observation
+	// goes backward more than the per-station accuracy tolerance, the
+	// station has been NTP-stepped / suspend-resumed / VM-jumped and the
+	// pair-offset state touching it must be reset before bogus samples
+	// poison the median window.
+	lastAnchorObsNs map[string]uint64
 }
 
 // ClockSyncWarning is a structured operator-facing warning surfaced via
@@ -197,14 +205,17 @@ type ClockSyncStats struct {
 	ObservationsRSSIGated int
 	PairsKnown            int
 	PairsConverged        int
+	ClockStepsDetected    int // monotonicity-guard trips
+	ClockStepsResetPairs  int // total pairs cleared by guard
 }
 
 // NewClockSync returns an empty clock-sync state with the given config.
 func NewClockSync(cfg ClockSyncConfig) *ClockSync {
 	return &ClockSync{
-		anchors: make(map[string]AnchorNode),
-		pairs:   make(map[string]*PairOffset),
-		config:  cfg,
+		anchors:         make(map[string]AnchorNode),
+		pairs:           make(map[string]*PairOffset),
+		lastAnchorObsNs: make(map[string]uint64),
+		config:          cfg,
 	}
 }
 
@@ -348,11 +359,6 @@ func (cs *ClockSync) FeedCluster(c *Cluster) []PairSnapshotRecord {
 	defer cs.mu.Unlock()
 	cs.stats.ObservationsFed += len(c.Observations)
 	usable := make([]Observation, 0, len(c.Observations))
-	// snapshotTimeNs: RF event time anchor of THIS anchor cluster, used
-	// as the snapshot_time_ns of every pair_snapshot row this call
-	// produces. Max preamble_lock_t_ns across usable obs -- mirrors
-	// the cluster_observations key encoding for consistency.
-	var snapshotTimeNs uint64
 	for _, o := range c.Observations {
 		// Must have a precise per-frame lock timestamp to be useful.
 		if o.PreambleLockTNs == 0 {
@@ -364,13 +370,91 @@ func (cs *ClockSync) FeedCluster(c *Cluster) []PairSnapshotRecord {
 			cs.stats.ObservationsRSSIGated++
 			continue
 		}
-		if o.PreambleLockTNs > snapshotTimeNs {
-			snapshotTimeNs = o.PreambleLockTNs
-		}
 		usable = append(usable, o)
 	}
 	if len(usable) < 2 {
 		return nil
+	}
+
+	// Clock-monotonicity guard. An anchor observation whose
+	// preamble_lock_t_ns is more than tol behind this station's previous
+	// anchor observation means the station's host clock walked backward
+	// (NTP step / chrony correction / suspend-resume / VM jump). Trust on
+	// that station is reset by deleting every pair touching it; future
+	// anchor observations from the station retrain the affected pairs
+	// from scratch under the new clock baseline. Anchor scope only --
+	// target packets never reach this code path. Behavior referenced from
+	// mlat-server's ClockPairing reset on monotonicity violation; no code
+	// copied (AGPL-3.0).
+	type steppedStation struct {
+		name    string
+		prevNs  uint64
+		currNs  uint64
+		deltaNs int64
+	}
+	var stepped []steppedStation
+	filtered := usable[:0]
+	for _, o := range usable {
+		prev := cs.lastAnchorObsNs[o.Station]
+		// Tolerance absorbs honest software-clock jitter. 1 ms floor
+		// catches stations that report TAccNs=0 / unset.
+		tol := uint64(o.StationTAccNs)
+		if tol < 1_000_000 {
+			tol = 1_000_000
+		}
+		if prev != 0 && o.PreambleLockTNs+tol < prev {
+			stepped = append(stepped, steppedStation{
+				name:    o.Station,
+				prevNs:  prev,
+				currNs:  o.PreambleLockTNs,
+				deltaNs: int64(o.PreambleLockTNs) - int64(prev),
+			})
+			// The new clock baseline IS the new normal -- update so the
+			// next observation is compared against it, otherwise every
+			// post-step observation re-trips the guard forever.
+			cs.lastAnchorObsNs[o.Station] = o.PreambleLockTNs
+			cs.stats.ClockStepsDetected++
+			continue
+		}
+		if o.PreambleLockTNs > prev {
+			cs.lastAnchorObsNs[o.Station] = o.PreambleLockTNs
+		}
+		filtered = append(filtered, o)
+	}
+	usable = filtered
+	for _, s := range stepped {
+		var dropped int
+		for key, po := range cs.pairs {
+			if po.A == s.name || po.B == s.name {
+				delete(cs.pairs, key)
+				dropped++
+			}
+		}
+		cs.stats.ClockStepsResetPairs += dropped
+		cs.anchorWarnings = append(cs.anchorWarnings, ClockSyncWarning{
+			Code:        "clock_step_detected",
+			StationName: s.name,
+			Message: fmt.Sprintf(
+				"station %q anchor timestamp went backward by %d ns "+
+					"(prev=%d -> curr=%d). %d pair(s) reset; "+
+					"future anchor observations will retrain. "+
+					"NTP step / suspend-resume / VM jump?",
+				s.name, -s.deltaNs, s.prevNs, s.currNs, dropped),
+		})
+	}
+	if len(usable) < 2 {
+		return nil
+	}
+
+	// snapshotTimeNs: RF event time anchor of THIS anchor cluster, used
+	// as the snapshot_time_ns of every pair_snapshot row this call
+	// produces. Max preamble_lock_t_ns across surviving usable obs --
+	// mirrors the cluster_observations key encoding for consistency.
+	var snapshotTimeNs uint64
+	for _, o := range usable {
+		if o.PreambleLockTNs > snapshotTimeNs {
+			snapshotTimeNs = o.PreambleLockTNs
+		}
 	}
 	now := time.Now()
 	touched := map[string]struct{}{} // pair keys mutated by this anchor cluster

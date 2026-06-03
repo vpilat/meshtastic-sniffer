@@ -318,3 +318,170 @@ func TestAnchorParseCLI(t *testing.T) {
 		t.Error("unknown key should error")
 	}
 }
+
+// Clock-monotonicity guard tests (0d).
+//
+// The guard exists because volunteer stations on NTP/host clocks can step
+// backward (chrony correction, suspend-resume, VM jump). Without the
+// guard, a backward step feeds a giant negative sample into PairOffset
+// that poisons the median window for up to MaxAgeS=600s. The fix:
+// detect per-station monotonicity violations during FeedCluster, drop
+// the offending observation, delete pair state touching that station so
+// future anchor observations retrain from scratch under the new clock
+// baseline, and emit a ClockSyncWarning visible via the existing
+// /api/clock-sync/warnings endpoint.
+
+// 1. Monotonic anchor observations converge normally; the guard never
+//    trips.
+func TestMonotonicity_NormalConvergesNoSteps(t *testing.T) {
+	s := newScene(t, 0)
+	offsets := map[string]float64{"alpha": 0, "bravo": 50_000.0, "delta": -30_000.0}
+	for i := 0; i < 8; i++ {
+		c := s.mkAnchorCluster(uint32(1000+i),
+			uint64(1_700_000_000_000_000_000+i*1_000_000), offsets)
+		s.cs.FeedCluster(c)
+	}
+	st := s.cs.Snapshot()
+	if st.ClockStepsDetected != 0 || st.ClockStepsResetPairs != 0 {
+		t.Errorf("monotonic feed tripped guard: detected=%d reset=%d",
+			st.ClockStepsDetected, st.ClockStepsResetPairs)
+	}
+	if po := s.cs.PairSnapshotByStations("alpha", "bravo"); po == nil || po.Status != "converged" {
+		t.Errorf("alpha|bravo did not converge under monotonic feed: %+v", po)
+	}
+}
+
+// 2. A backward step beyond tolerance resets pairs touching that
+//    station; pairs NOT touching it survive.
+func TestMonotonicity_BackwardStepResetsPairsTouchingStation(t *testing.T) {
+	s := newScene(t, 0)
+	offsets := map[string]float64{"alpha": 0, "bravo": 50_000.0, "delta": -30_000.0}
+	// Warm up: 8 monotonic clusters; every pair should be converged.
+	for i := 0; i < 8; i++ {
+		c := s.mkAnchorCluster(uint32(1000+i),
+			uint64(1_700_000_000_000_000_000+i*1_000_000), offsets)
+		s.cs.FeedCluster(c)
+	}
+	if s.cs.PairSnapshotByStations("alpha", "bravo") == nil ||
+		s.cs.PairSnapshotByStations("alpha", "delta") == nil ||
+		s.cs.PairSnapshotByStations("bravo", "delta") == nil {
+		t.Fatal("warm-up: all three pairs should exist after 8 monotonic feeds")
+	}
+	// Now feed a cluster where alpha's preamble_lock_t_ns steps backward
+	// by ~1 second relative to its prior value (a typical NTP step).
+	// txTimeNs continues to advance normally; only alpha's offset jumps.
+	stepCluster := s.mkAnchorCluster(2000,
+		uint64(1_700_000_000_000_000_000+9*1_000_000),
+		map[string]float64{"alpha": -1_000_000_000.0, "bravo": 50_000.0, "delta": -30_000.0})
+	s.cs.FeedCluster(stepCluster)
+
+	st := s.cs.Snapshot()
+	if st.ClockStepsDetected != 1 {
+		t.Errorf("ClockStepsDetected=%d, want 1", st.ClockStepsDetected)
+	}
+	// Two pairs touch alpha (alpha|bravo, alpha|delta); both must be gone.
+	if po := s.cs.PairSnapshotByStations("alpha", "bravo"); po != nil {
+		t.Errorf("alpha|bravo should be deleted by step; got %+v", po)
+	}
+	if po := s.cs.PairSnapshotByStations("alpha", "delta"); po != nil {
+		t.Errorf("alpha|delta should be deleted by step; got %+v", po)
+	}
+	if st.ClockStepsResetPairs != 2 {
+		t.Errorf("ClockStepsResetPairs=%d, want 2", st.ClockStepsResetPairs)
+	}
+}
+
+// 3. A tiny backward movement INSIDE tolerance is accepted and does NOT
+//    trip the guard. Software-clock jitter must not nuke pair state.
+func TestMonotonicity_TinyBackwardAcceptedWithinTolerance(t *testing.T) {
+	s := newScene(t, 0)
+	offsets := map[string]float64{"alpha": 0, "bravo": 50_000.0, "delta": -30_000.0}
+	// Warm-up.
+	for i := 0; i < 5; i++ {
+		c := s.mkAnchorCluster(uint32(1000+i),
+			uint64(1_700_000_000_000_000_000+i*1_000_000), offsets)
+		s.cs.FeedCluster(c)
+	}
+	// 500 us backward on alpha. Tolerance floor is 1 ms = 1_000_000 ns,
+	// so this should be absorbed: no step detected, no pairs reset.
+	tinyBack := s.mkAnchorCluster(2000,
+		uint64(1_700_000_000_000_000_000+6*1_000_000),
+		map[string]float64{"alpha": -500_000.0, "bravo": 50_000.0, "delta": -30_000.0})
+	s.cs.FeedCluster(tinyBack)
+	st := s.cs.Snapshot()
+	if st.ClockStepsDetected != 0 {
+		t.Errorf("tiny backward tripped guard: detected=%d", st.ClockStepsDetected)
+	}
+	if po := s.cs.PairSnapshotByStations("alpha", "bravo"); po == nil {
+		t.Errorf("alpha|bravo should still exist under tiny backward jitter")
+	}
+}
+
+// 4. A step on station alpha must NOT reset the bravo|delta pair, which
+//    does not touch alpha. Guard scope is per-station, not global.
+func TestMonotonicity_StepOnAlphaPreservesBravoDeltaPair(t *testing.T) {
+	s := newScene(t, 0)
+	offsets := map[string]float64{"alpha": 0, "bravo": 50_000.0, "delta": -30_000.0}
+	for i := 0; i < 8; i++ {
+		c := s.mkAnchorCluster(uint32(1000+i),
+			uint64(1_700_000_000_000_000_000+i*1_000_000), offsets)
+		s.cs.FeedCluster(c)
+	}
+	bdBefore := s.cs.PairSnapshotByStations("bravo", "delta")
+	if bdBefore == nil {
+		t.Fatal("warm-up: bravo|delta should exist")
+	}
+	stepCluster := s.mkAnchorCluster(2000,
+		uint64(1_700_000_000_000_000_000+9*1_000_000),
+		map[string]float64{"alpha": -1_000_000_000.0, "bravo": 50_000.0, "delta": -30_000.0})
+	s.cs.FeedCluster(stepCluster)
+
+	bdAfter := s.cs.PairSnapshotByStations("bravo", "delta")
+	if bdAfter == nil {
+		t.Fatalf("bravo|delta deleted by unrelated alpha step; guard scope is wrong")
+	}
+	// After alpha's obs was dropped, the surviving cluster has only 2 obs
+	// (bravo + delta). FeedCluster's `len(usable) < 2` gate still passes
+	// (>= 2 needed), so bravo|delta gets ONE additional sample. The pair
+	// must still be converged from the warm-up.
+	if bdAfter.Status != "converged" {
+		t.Errorf("bravo|delta status=%q after alpha step, want still converged", bdAfter.Status)
+	}
+}
+
+// 5. The clock-step event must surface through the existing
+//    AnchorWarnings list with code "clock_step_detected" so the
+//    /api/clock-sync/warnings endpoint and dashboard health strip pick
+//    it up automatically.
+func TestMonotonicity_WarningSurfacedViaAnchorWarnings(t *testing.T) {
+	s := newScene(t, 0)
+	offsets := map[string]float64{"alpha": 0, "bravo": 50_000.0, "delta": -30_000.0}
+	for i := 0; i < 5; i++ {
+		c := s.mkAnchorCluster(uint32(1000+i),
+			uint64(1_700_000_000_000_000_000+i*1_000_000), offsets)
+		s.cs.FeedCluster(c)
+	}
+	if len(s.cs.AnchorWarnings()) != 0 {
+		t.Errorf("warm-up should not have produced any warnings; got %d",
+			len(s.cs.AnchorWarnings()))
+	}
+	stepCluster := s.mkAnchorCluster(2000,
+		uint64(1_700_000_000_000_000_000+6*1_000_000),
+		map[string]float64{"alpha": -1_000_000_000.0, "bravo": 50_000.0, "delta": -30_000.0})
+	s.cs.FeedCluster(stepCluster)
+
+	warns := s.cs.AnchorWarnings()
+	if len(warns) != 1 {
+		t.Fatalf("AnchorWarnings count=%d after step, want 1: %+v", len(warns), warns)
+	}
+	w := warns[0]
+	if w.Code != "clock_step_detected" {
+		t.Errorf("warning code=%q, want clock_step_detected", w.Code)
+	}
+	if w.StationName != "alpha" {
+		t.Errorf("warning station=%q, want alpha", w.StationName)
+	}
+	if !containsAll(w.Message, "alpha", "backward") {
+		t.Errorf("warning message missing context: %q", w.Message)
+	}
+}
