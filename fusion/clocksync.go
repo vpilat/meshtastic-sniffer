@@ -169,11 +169,25 @@ func DefaultClockSyncConfig() ClockSyncConfig {
 
 // ClockSync is the per-fusion-process clock-sync state.
 type ClockSync struct {
-	anchors map[string]AnchorNode      // keyed by from-id
-	pairs   map[string]*PairOffset     // keyed by PairKey
-	config  ClockSyncConfig
-	mu      sync.RWMutex
-	stats   ClockSyncStats
+	anchors        map[string]AnchorNode  // keyed by from-id
+	pairs          map[string]*PairOffset // keyed by PairKey
+	config         ClockSyncConfig
+	mu             sync.RWMutex
+	stats          ClockSyncStats
+	anchorWarnings []ClockSyncWarning
+}
+
+// ClockSyncWarning is a structured operator-facing warning surfaced via
+// /api/clock-sync/warnings. The dashboard health strip uses these to
+// render persistent banners ("anchor X too close to station Y") that
+// would otherwise only show up in fusion's startup log.
+type ClockSyncWarning struct {
+	Code        string  `json:"code"`         // e.g. "anchor_too_close"
+	AnchorID    string  `json:"anchor_id"`
+	StationName string  `json:"station_name"`
+	DistanceM   float64 `json:"distance_m"`
+	MinM        float64 `json:"min_m"`
+	Message     string  `json:"message"`
 }
 
 // ClockSyncStats are runtime counters exposed for dashboards / logs.
@@ -224,10 +238,10 @@ type stationCoord struct {
 	Lon  float64
 }
 
-func (cs *ClockSync) CheckAnchorPlacement(stations []stationCoord) []string {
+func (cs *ClockSync) CheckAnchorPlacement(stations []stationCoord) []ClockSyncWarning {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
-	var warnings []string
+	var warnings []ClockSyncWarning
 	for _, a := range cs.anchors {
 		if a.Type == AnchorColocated {
 			continue // co-located anchors are intentionally close to ONE station
@@ -238,16 +252,56 @@ func (cs *ClockSync) CheckAnchorPlacement(stations []stationCoord) []string {
 			}
 			distM := haversineM(a.Lat, a.Lon, s.Lat, s.Lon)
 			if distM < cs.config.MinDistanceM {
-				warnings = append(warnings, fmt.Sprintf(
-					"anchor %s is %.1f m from sniffer station %q (<%.0f m). "+
-						"Clock-sync samples from this pair will likely be biased "+
-						"by near-field / front-end saturation. "+
-						"See docs/clock-sync.md#anchor-placement.",
-					a.NodeID, distM, s.Name, cs.config.MinDistanceM))
+				warnings = append(warnings, ClockSyncWarning{
+					Code:        "anchor_too_close",
+					AnchorID:    a.NodeID,
+					StationName: s.Name,
+					DistanceM:   distM,
+					MinM:        cs.config.MinDistanceM,
+					Message: fmt.Sprintf(
+						"anchor %s is %.1f m from sniffer station %q (<%.0f m). "+
+							"Clock-sync samples from this pair will likely be biased "+
+							"by near-field / front-end saturation. "+
+							"See docs/clock-sync.md#anchor-placement.",
+						a.NodeID, distM, s.Name, cs.config.MinDistanceM),
+				})
 			}
 		}
 	}
 	return warnings
+}
+
+// SetAnchorWarnings records the current anchor-placement warnings on
+// process state so the /api/clock-sync/warnings HTTP endpoint can serve
+// them. Called at startup after CheckAnchorPlacement; calling again
+// (e.g. when the sensor registry changes) overwrites the prior list.
+// Safe to call on a nil receiver.
+func (cs *ClockSync) SetAnchorWarnings(ws []ClockSyncWarning) {
+	if cs == nil {
+		return
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.anchorWarnings = append(cs.anchorWarnings[:0], ws...)
+}
+
+// AnchorWarnings returns a copy of the retained warnings so callers can
+// hold the slice without racing the writer. Returns a non-nil empty
+// slice when there are no warnings (distinguishable from "clock-sync
+// disabled" at the HTTP layer because the handler short-circuits when
+// the package-level ClockSync is nil).
+func (cs *ClockSync) AnchorWarnings() []ClockSyncWarning {
+	if cs == nil {
+		return nil
+	}
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	if len(cs.anchorWarnings) == 0 {
+		return []ClockSyncWarning{}
+	}
+	out := make([]ClockSyncWarning, len(cs.anchorWarnings))
+	copy(out, cs.anchorWarnings)
+	return out
 }
 
 // haversineM computes great-circle distance in meters between two

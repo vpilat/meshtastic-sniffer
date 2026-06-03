@@ -68,6 +68,23 @@ func newAPIHandler(t *testing.T, registry *Registry, hub *SSEHub, apiToken strin
 		}
 		jsonOK(w, map[string]string{"removed": name})
 	})
+	// Mirrors startWebServer's /api/clock-sync/warnings handler so the
+	// route is exercised under the same auth wrap as the real server.
+	apiMux.HandleFunc("/api/clock-sync/warnings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		warnings := []ClockSyncWarning{}
+		if globalClockSync != nil {
+			warnings = globalClockSync.AnchorWarnings()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enabled":  globalClockSync != nil,
+			"warnings": warnings,
+		})
+	})
 	wrapped := authWrap(apiMux, apiToken)
 	mux.Handle("/api/", wrapped)
 	mux.Handle("/events", wrapped)
@@ -202,5 +219,131 @@ func TestAPI_AddSensorMissingFieldsIs400(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400 (sensor needs zmq endpoint)", w.Code)
+	}
+}
+
+// withGlobalClockSync swaps the package-level globalClockSync for the
+// duration of one test and restores it on cleanup. Lets the endpoint
+// tests exercise the disabled / enabled / warning-bearing states without
+// leaking state into the next test.
+func withGlobalClockSync(t *testing.T, cs *ClockSync) {
+	t.Helper()
+	prev := globalClockSync
+	globalClockSync = cs
+	t.Cleanup(func() { globalClockSync = prev })
+}
+
+// TestAPI_ClockSyncWarnings_Disabled: when fusion runs with
+// --clock-sync=off (globalClockSync == nil), the endpoint must still
+// answer 200 with enabled=false and empty warnings list.
+func TestAPI_ClockSyncWarnings_Disabled(t *testing.T) {
+	withGlobalClockSync(t, nil)
+	r := newTestRegistryUnauthed(t)
+	h := newAPIHandler(t, r, nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/clock-sync/warnings", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", w.Code)
+	}
+	body, _ := io.ReadAll(w.Body)
+	var got struct {
+		Enabled  bool               `json:"enabled"`
+		Warnings []ClockSyncWarning `json:"warnings"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v -- body=%s", err, body)
+	}
+	if got.Enabled {
+		t.Errorf("enabled=true with nil globalClockSync")
+	}
+	if got.Warnings == nil || len(got.Warnings) != 0 {
+		t.Errorf("warnings=%v, want []", got.Warnings)
+	}
+}
+
+// TestAPI_ClockSyncWarnings_Empty: clock-sync enabled but no warnings
+// retained (e.g. anchors all placed at safe distances). Must report
+// enabled=true with empty warnings list.
+func TestAPI_ClockSyncWarnings_Empty(t *testing.T) {
+	cs := NewClockSync(DefaultClockSyncConfig())
+	withGlobalClockSync(t, cs)
+	r := newTestRegistryUnauthed(t)
+	h := newAPIHandler(t, r, nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/clock-sync/warnings", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", w.Code)
+	}
+	var got struct {
+		Enabled  bool               `json:"enabled"`
+		Warnings []ClockSyncWarning `json:"warnings"`
+	}
+	_ = json.NewDecoder(w.Body).Decode(&got)
+	if !got.Enabled {
+		t.Errorf("enabled=false with non-nil globalClockSync")
+	}
+	if got.Warnings == nil || len(got.Warnings) != 0 {
+		t.Errorf("warnings=%v, want []", got.Warnings)
+	}
+}
+
+// TestAPI_ClockSyncWarnings_Populated: warnings retained via
+// SetAnchorWarnings appear verbatim in the response body.
+func TestAPI_ClockSyncWarnings_Populated(t *testing.T) {
+	cs := NewClockSync(DefaultClockSyncConfig())
+	cs.SetAnchorWarnings([]ClockSyncWarning{{
+		Code:        "anchor_too_close",
+		AnchorID:    "!aaaa",
+		StationName: "rooftop",
+		DistanceM:   12.3,
+		MinM:        30.0,
+		Message:     "anchor !aaaa is 12.3 m from sniffer station \"rooftop\" (<30 m)",
+	}})
+	withGlobalClockSync(t, cs)
+
+	r := newTestRegistryUnauthed(t)
+	h := newAPIHandler(t, r, nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/clock-sync/warnings", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", w.Code)
+	}
+	var got struct {
+		Enabled  bool               `json:"enabled"`
+		Warnings []ClockSyncWarning `json:"warnings"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Enabled {
+		t.Errorf("enabled=false; want true")
+	}
+	if len(got.Warnings) != 1 {
+		t.Fatalf("warnings len=%d, want 1: %+v", len(got.Warnings), got.Warnings)
+	}
+	wn := got.Warnings[0]
+	if wn.Code != "anchor_too_close" || wn.AnchorID != "!aaaa" || wn.StationName != "rooftop" {
+		t.Errorf("warning fields mismatch: %+v", wn)
+	}
+	if wn.DistanceM != 12.3 || wn.MinM != 30.0 {
+		t.Errorf("warning distances mismatch: %+v", wn)
+	}
+}
+
+// TestAPI_ClockSyncWarnings_MethodNotAllowed: POST / DELETE / etc must
+// return 405. Operator can read but not mutate the list.
+func TestAPI_ClockSyncWarnings_MethodNotAllowed(t *testing.T) {
+	withGlobalClockSync(t, NewClockSync(DefaultClockSyncConfig()))
+	r := newTestRegistryUnauthed(t)
+	h := newAPIHandler(t, r, nil, "")
+	req := httptest.NewRequest(http.MethodPost, "/api/clock-sync/warnings",
+		strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status=%d want 405", w.Code)
 	}
 }

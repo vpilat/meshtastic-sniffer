@@ -236,12 +236,49 @@ func TestCheckAnchorPlacement(t *testing.T) {
 	}
 	warns := cs.CheckAnchorPlacement(stations)
 	if len(warns) != 1 {
-		t.Fatalf("got %d warnings, want 1: %v", len(warns), warns)
+		t.Fatalf("got %d warnings, want 1: %+v", len(warns), warns)
 	}
-	// Sanity-check the warning text mentions both names.
 	w := warns[0]
-	if !containsAll(w, "!nearby", "rooftop") {
-		t.Errorf("warning missing names: %q", w)
+	if w.Code != "anchor_too_close" {
+		t.Errorf("warning code = %q, want anchor_too_close", w.Code)
+	}
+	if w.AnchorID != "!nearby" || w.StationName != "rooftop" {
+		t.Errorf("warning ids = (%s, %s), want (!nearby, rooftop)", w.AnchorID, w.StationName)
+	}
+	if w.DistanceM > 10 || w.MinM != 50 {
+		t.Errorf("warning distances unexpected: DistanceM=%.2f MinM=%.2f", w.DistanceM, w.MinM)
+	}
+	if !containsAll(w.Message, "!nearby", "rooftop") {
+		t.Errorf("warning message missing names: %q", w.Message)
+	}
+
+	// Retain via SetAnchorWarnings; AnchorWarnings returns a copy.
+	cs.SetAnchorWarnings(warns)
+	got := cs.AnchorWarnings()
+	if len(got) != 1 || got[0].AnchorID != "!nearby" {
+		t.Errorf("AnchorWarnings round-trip failed: %+v", got)
+	}
+	// Mutating the returned slice must not corrupt internal state.
+	got[0].AnchorID = "mutated"
+	if cs.AnchorWarnings()[0].AnchorID != "!nearby" {
+		t.Errorf("AnchorWarnings returned mutable internal slice")
+	}
+
+	// Empty list returns non-nil empty slice, not nil.
+	cs.SetAnchorWarnings(nil)
+	if got := cs.AnchorWarnings(); got == nil || len(got) != 0 {
+		t.Errorf("AnchorWarnings after Set(nil) = %v, want empty non-nil slice", got)
+	}
+}
+
+// TestAnchorWarnings_NilReceiver exercises the nil-safe path: a fusion
+// process with --clock-sync=off has globalClockSync == nil but the HTTP
+// handler still calls AnchorWarnings(). Must not panic.
+func TestAnchorWarnings_NilReceiver(t *testing.T) {
+	var cs *ClockSync
+	cs.SetAnchorWarnings([]ClockSyncWarning{{Code: "x"}}) // must not panic
+	if got := cs.AnchorWarnings(); got != nil {
+		t.Errorf("nil receiver AnchorWarnings = %v, want nil", got)
 	}
 }
 

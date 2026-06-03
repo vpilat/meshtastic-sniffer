@@ -242,6 +242,27 @@ func startWebServer(ctx context.Context, listen string, hub *SSEHub, registry *R
 	})
 	// Command fan-out endpoints: /api/fanout/keys, share-url, etc.
 	installFanoutHandlers(apiMux, registry)
+	// Clock-sync placement warnings. The dashboard health strip polls this
+	// to render persistent "anchor X too close to station Y" banners that
+	// would otherwise only surface in fusion's startup log. When clock-sync
+	// is disabled, `enabled: false` lets the UI decide between "no banner"
+	// vs "no anchors configured yet" messaging.
+	apiMux.HandleFunc("/api/clock-sync/warnings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		warnings := []ClockSyncWarning{}
+		if globalClockSync != nil {
+			warnings = globalClockSync.AnchorWarnings()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enabled":  globalClockSync != nil,
+			"warnings": warnings,
+		})
+	})
+
 	apiMux.HandleFunc("/api/dealer-stats", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)

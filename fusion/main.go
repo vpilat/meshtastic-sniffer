@@ -536,8 +536,10 @@ func main() {
 			}
 			stations = append(stations, stationCoord{Name: s.Name, Lat: s.Lat, Lon: s.Lon})
 		}
-		for _, w := range globalClockSync.CheckAnchorPlacement(stations) {
-			log.Printf("WARN clock-sync: %s", w)
+		warnings := globalClockSync.CheckAnchorPlacement(stations)
+		globalClockSync.SetAnchorWarnings(warnings)
+		for _, w := range warnings {
+			log.Printf("WARN clock-sync: %s", w.Message)
 		}
 	}
 
