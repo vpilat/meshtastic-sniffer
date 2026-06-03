@@ -85,15 +85,159 @@ type Observation struct {
 }
 
 // Cluster groups same-packet observations from one transmission.
+//
+// A "transmission" here means one RF emission: relays and retransmits of
+// the same (from, packet_id) are distinct RF events with distinct wavefronts
+// and must NOT be fused into one TDOA solve. Each Cluster represents at
+// most one wavefront; the in-flight pool (main loop's `pending` map) can
+// hold multiple Clusters for the same baseKey ("from|packet_id") when
+// distinct emissions arrive within the dedup window.
+//
+// EmissionSeq tags each cluster with its sequence number within a baseKey.
+// MinPreambleLockTNs/MaxPreambleLockTNs track the lock-timestamp spread used
+// by the same-emission gate. LowTrust marks clusters whose membership relied
+// on the wall-clock fallback (missing preamble_lock_t_ns) or that have any
+// lock-free observation, so downstream solve quality can be downgraded.
+// StationDupesSuppressed counts per-station collisions resolved by keeping
+// the better observation (higher class, then higher SNR).
 type Cluster struct {
-	Key          string // "from|packet_id"
-	FirstSeen    time.Time
-	Frame        Frame // representative (first-seen) frame for non-station fields
-	Observations []Observation
+	Key                   string // "from|packet_id" (seq=0) or "from|packet_id|seq" (seq>0)
+	BaseKey               string // "from|packet_id" -- always
+	EmissionSeq           int
+	FirstSeen             time.Time
+	Frame                 Frame // representative (first-seen) frame for non-station fields
+	Observations          []Observation
+	MinPreambleLockTNs    uint64
+	MaxPreambleLockTNs    uint64
+	LowTrust              bool
+	StationDupesSuppressed int
 }
 
 func clusterKey(from string, pid uint32) string {
 	return fmt.Sprintf("%s|%d", from, pid)
+}
+
+// clusterKeyWithSeq formats the per-emission cluster identity. The base
+// (seq=0) form is identical to clusterKey so older log/print paths read
+// the same when there is no relay/retransmit. Sequenced form is used for
+// the second and subsequent emissions of the same (from, packet_id).
+func clusterKeyWithSeq(from string, pid uint32, seq int) string {
+	if seq == 0 {
+		return clusterKey(from, pid)
+	}
+	return fmt.Sprintf("%s|%d|%d", from, pid, seq)
+}
+
+// observationClass returns the cluster-build-time timestamp class for an
+// observation, used only for per-station dedup ranking. Higher beats lower.
+// At cluster-build time clock-sync has not yet been applied, so we only
+// distinguish lock-bearing (software_lock+) from frame-only observations.
+// payload_crc_ok / fields_trusted could fold in later as additional inputs;
+// those are not present on Observation yet.
+func observationClass(o Observation) int {
+	if o.PreambleLockTNs != 0 {
+		return 1
+	}
+	return 0
+}
+
+// betterObservation returns true when `a` should win a per-station dedup
+// face-off against `b`: higher class first, then higher SNR.
+func betterObservation(a, b Observation) bool {
+	ca, cb := observationClass(a), observationClass(b)
+	if ca != cb {
+		return ca > cb
+	}
+	return a.SnrDB > b.SnrDB
+}
+
+// pickCluster finds the in-flight cluster within `clusters` (all sharing
+// one baseKey) that this incoming frame should join under the same-emission
+// rule. Returns nil when a fresh cluster should be spawned (next EmissionSeq).
+//
+// Lock-bearing frame: pick the first cluster whose [Min,Max]PreambleLockTNs
+// would stay within sameEmissionNs after the new lock joins. Clusters with no
+// lock-bearing observations yet (Min=Max=0) accept any lock-bearing join.
+//
+// Lock-free frame: pick the most-recently-created cluster (highest
+// EmissionSeq) so the lock-free observation lands with its likely peers.
+// Caller marks the chosen cluster LowTrust on the join. When no clusters
+// exist, returns nil to signal a fresh LowTrust cluster.
+func pickCluster(clusters []*Cluster, f Frame, sameEmissionNs uint64) *Cluster {
+	if f.PreambleLockTNs != 0 {
+		for _, c := range clusters {
+			if c.MinPreambleLockTNs == 0 && c.MaxPreambleLockTNs == 0 {
+				return c
+			}
+			lo, hi := c.MinPreambleLockTNs, c.MaxPreambleLockTNs
+			if f.PreambleLockTNs < lo {
+				lo = f.PreambleLockTNs
+			}
+			if f.PreambleLockTNs > hi {
+				hi = f.PreambleLockTNs
+			}
+			if hi-lo <= sameEmissionNs {
+				return c
+			}
+		}
+		return nil
+	}
+	if len(clusters) == 0 {
+		return nil
+	}
+	latest := clusters[0]
+	for _, c := range clusters[1:] {
+		if c.EmissionSeq > latest.EmissionSeq {
+			latest = c
+		}
+	}
+	return latest
+}
+
+// mergeObservation appends `obs` to `c` enforcing per-station dedup: at
+// most one observation per station per cluster. On collision the better
+// observation (higher class, then higher SNR) is retained and
+// StationDupesSuppressed is bumped. Lock bounds are kept in sync.
+func (c *Cluster) mergeObservation(obs Observation) {
+	for i, existing := range c.Observations {
+		if existing.Station == obs.Station {
+			if betterObservation(obs, existing) {
+				c.Observations[i] = obs
+			}
+			c.StationDupesSuppressed++
+			c.recomputeLockBounds()
+			return
+		}
+	}
+	c.Observations = append(c.Observations, obs)
+	if obs.PreambleLockTNs != 0 {
+		if c.MinPreambleLockTNs == 0 || obs.PreambleLockTNs < c.MinPreambleLockTNs {
+			c.MinPreambleLockTNs = obs.PreambleLockTNs
+		}
+		if obs.PreambleLockTNs > c.MaxPreambleLockTNs {
+			c.MaxPreambleLockTNs = obs.PreambleLockTNs
+		}
+	}
+}
+
+// recomputeLockBounds rescans the cluster's observations and resets
+// MinPreambleLockTNs/MaxPreambleLockTNs. Called after per-station dedup
+// swaps an observation in place, since the displaced lock may no longer
+// be in the cluster.
+func (c *Cluster) recomputeLockBounds() {
+	c.MinPreambleLockTNs = 0
+	c.MaxPreambleLockTNs = 0
+	for _, o := range c.Observations {
+		if o.PreambleLockTNs == 0 {
+			continue
+		}
+		if c.MinPreambleLockTNs == 0 || o.PreambleLockTNs < c.MinPreambleLockTNs {
+			c.MinPreambleLockTNs = o.PreambleLockTNs
+		}
+		if o.PreambleLockTNs > c.MaxPreambleLockTNs {
+			c.MaxPreambleLockTNs = o.PreambleLockTNs
+		}
+	}
 }
 
 // Subscriber management is in sensors.go's SubscriberPool. CLI-arg
@@ -102,13 +246,25 @@ func clusterKey(from string, pid uint32) string {
 // using the same add/remove mechanism.
 
 // flushReady removes clusters older than `window` from `pending`,
-// returning them sorted by first-seen.
-func flushReady(pending map[string]*Cluster, window time.Duration, now time.Time) []*Cluster {
+// returning them sorted by first-seen. With the same-emission rule in
+// place, `pending` holds a slice of in-flight clusters per baseKey so
+// multiple emissions of one (from, packet_id) coexist; flush walks each
+// slice and keeps the ones still inside the wall-clock window.
+func flushReady(pending map[string][]*Cluster, window time.Duration, now time.Time) []*Cluster {
 	var ready []*Cluster
-	for k, c := range pending {
-		if now.Sub(c.FirstSeen) > window {
-			ready = append(ready, c)
+	for k, clusters := range pending {
+		kept := clusters[:0]
+		for _, c := range clusters {
+			if now.Sub(c.FirstSeen) > window {
+				ready = append(ready, c)
+			} else {
+				kept = append(kept, c)
+			}
+		}
+		if len(kept) == 0 {
 			delete(pending, k)
+		} else {
+			pending[k] = kept
 		}
 	}
 	sort.Slice(ready, func(i, j int) bool {
@@ -136,10 +292,24 @@ func printCluster(c *Cluster, totalStations int) {
 	if preset == "" {
 		preset = "?"
 	}
-	fmt.Printf("%-11s pid=%-10d %-11s ch=%-12s hop=%d/%d  heard-by=%d/%d [%s]\n",
+	var tags []string
+	if c.EmissionSeq > 0 {
+		tags = append(tags, fmt.Sprintf("seq=%d", c.EmissionSeq))
+	}
+	if c.LowTrust {
+		tags = append(tags, "low_trust")
+	}
+	if c.StationDupesSuppressed > 0 {
+		tags = append(tags, fmt.Sprintf("dupes=%d", c.StationDupesSuppressed))
+	}
+	tagStr := ""
+	if len(tags) > 0 {
+		tagStr = " [" + strings.Join(tags, ",") + "]"
+	}
+	fmt.Printf("%-11s pid=%-10d %-11s ch=%-12s hop=%d/%d  heard-by=%d/%d [%s]%s\n",
 		c.Frame.From, c.Frame.PacketID, preset, chName,
 		c.Frame.HopLimit, c.Frame.HopStart,
-		len(stations), totalStations, strings.Join(parts, ", "))
+		len(stations), totalStations, strings.Join(parts, ", "), tagStr)
 }
 
 // toClusterObservationRecord projects a runtime Cluster into the
@@ -150,15 +320,18 @@ func printCluster(c *Cluster, totalStations int) {
 // let the replay path do time-range scans without rewalking the world.
 func toClusterObservationRecord(c *Cluster) *ClusterObservationRecord {
 	rec := &ClusterObservationRecord{
-		From:            c.Frame.From,
-		PacketID:        c.Frame.PacketID,
-		FirstSeenWallNs: uint64(c.FirstSeen.UnixNano()),
-		Preset:          c.Frame.Preset,
-		SF:              c.Frame.SF,
-		CR:              c.Frame.CR,
-		BwHz:            c.Frame.BwHz,
-		FreqHz:          c.Frame.FreqHz,
-		ChannelName:     c.Frame.ChannelName,
+		From:                   c.Frame.From,
+		PacketID:               c.Frame.PacketID,
+		EmissionSeq:            c.EmissionSeq,
+		FirstSeenWallNs:        uint64(c.FirstSeen.UnixNano()),
+		Preset:                 c.Frame.Preset,
+		SF:                     c.Frame.SF,
+		CR:                     c.Frame.CR,
+		BwHz:                   c.Frame.BwHz,
+		FreqHz:                 c.Frame.FreqHz,
+		ChannelName:            c.Frame.ChannelName,
+		LowTrust:               c.LowTrust,
+		StationDupesSuppressed: c.StationDupesSuppressed,
 	}
 	for _, o := range c.Observations {
 		rec.Observations = append(rec.Observations, ClusterObservationStation{
@@ -219,6 +392,12 @@ func txEventJSON(c *Cluster, totalStations int) ([]byte, error) {
 func main() {
 	window := flag.Duration("window", 5*time.Second,
 		"Dedup window across stations (e.g. 3s, 250ms)")
+	sameEmissionWindow := flag.Duration("same-emission-window", 200*time.Millisecond,
+		"Max spread of preamble_lock_t_ns within one TDOA cluster. Observations of "+
+			"the same (from, packet_id) whose lock-timestamp would exceed this spread "+
+			"spawn a new cluster (relay/retransmit). Tight values (e.g. 50ms) suit "+
+			"GPSDO-only deployments; default 200ms is safe for NTP-grade stations and "+
+			"still rejects the multi-second mesh relay shape.")
 	maxFrames := flag.Int("max-frames", 0,
 		"Stop after N consolidated frames (0 = unlimited)")
 	listen := flag.String("listen", "",
@@ -371,7 +550,9 @@ func main() {
 		}()
 	}
 
-	pending := map[string]*Cluster{}
+	pending := map[string][]*Cluster{}
+	nextEmissionSeq := map[string]int{}
+	sameEmissionNs := uint64(sameEmissionWindow.Nanoseconds())
 	consolidated := 0
 	tick := time.NewTicker(*window / 4)
 	defer tick.Stop()
@@ -395,18 +576,38 @@ loop:
 			if f.From == "" || f.PacketID == 0 {
 				continue
 			}
-			key := clusterKey(f.From, f.PacketID)
-			c, ok := pending[key]
+			baseKey := clusterKey(f.From, f.PacketID)
 			now := time.Now()
-			if !ok {
-				c = &Cluster{Key: key, FirstSeen: now, Frame: f}
-				pending[key] = c
+			c := pickCluster(pending[baseKey], f, sameEmissionNs)
+			if c == nil {
+				seq := nextEmissionSeq[baseKey]
+				nextEmissionSeq[baseKey] = seq + 1
+				c = &Cluster{
+					Key:         clusterKeyWithSeq(f.From, f.PacketID, seq),
+					BaseKey:     baseKey,
+					EmissionSeq: seq,
+					FirstSeen:   now,
+					Frame:       f,
+				}
+				if f.PreambleLockTNs == 0 {
+					// First observation has no lock; the same-emission gate
+					// has nothing to anchor on, so this cluster is born
+					// trust-degraded and stays that way for TDOA.
+					c.LowTrust = true
+				}
+				pending[baseKey] = append(pending[baseKey], c)
+			} else if f.PreambleLockTNs == 0 {
+				// Lock-free join to an existing cluster: we matched by
+				// wall-clock fallback (most-recent emission). Mark the
+				// whole cluster low-trust since one un-anchored
+				// observation taints the same-emission claim.
+				c.LowTrust = true
 			}
 			station := f.Station
 			if station == "" {
 				station = "(unnamed)"
 			}
-			c.Observations = append(c.Observations, Observation{
+			c.mergeObservation(Observation{
 				Station: station, StationLat: f.StationLat, StationLon: f.StationLon,
 				StationAltM: f.StationAltM, StationTNs: f.StationTNs,
 				StationTAccNs: f.StationTAccNs, PreambleLockTNs: f.PreambleLockTNs,

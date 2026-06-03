@@ -305,18 +305,29 @@ func ensureDir(dir string) error {
 
 // ClusterObservationRecord is the on-disk shape of one cluster_observations
 // row. Cluster-level fields up front, per-station array below.
+//
+// EmissionSeq distinguishes multiple RF emissions of the same (from,
+// packet_id): the first emission is seq=0 (back-compat key shape),
+// retransmits/relays caught in the same dedup window get seq=1, 2, ...
+// LowTrust marks clusters that relied on the wall-clock fallback because
+// one or more participating observations lacked preamble_lock_t_ns.
+// StationDupesSuppressed counts per-station collisions resolved by
+// keeping the better observation (higher class, then higher SNR).
 type ClusterObservationRecord struct {
-	From             string                       `json:"from"`
-	PacketID         uint32                       `json:"packet_id"`
-	ClusterTimeNs    uint64                       `json:"cluster_time_ns"`
-	FirstSeenWallNs  uint64                       `json:"first_seen_wall_ns"`
-	Preset           string                       `json:"preset,omitempty"`
-	SF               int                          `json:"sf,omitempty"`
-	CR               int                          `json:"cr,omitempty"`
-	BwHz             int                          `json:"bw_hz,omitempty"`
-	FreqHz           uint64                       `json:"freq_hz,omitempty"`
-	ChannelName      string                       `json:"channel_name,omitempty"`
-	Observations     []ClusterObservationStation  `json:"observations"`
+	From                   string                      `json:"from"`
+	PacketID               uint32                      `json:"packet_id"`
+	EmissionSeq            int                         `json:"emission_seq,omitempty"`
+	ClusterTimeNs          uint64                      `json:"cluster_time_ns"`
+	FirstSeenWallNs        uint64                      `json:"first_seen_wall_ns"`
+	Preset                 string                      `json:"preset,omitempty"`
+	SF                     int                         `json:"sf,omitempty"`
+	CR                     int                         `json:"cr,omitempty"`
+	BwHz                   int                         `json:"bw_hz,omitempty"`
+	FreqHz                 uint64                      `json:"freq_hz,omitempty"`
+	ChannelName            string                      `json:"channel_name,omitempty"`
+	LowTrust               bool                        `json:"low_trust,omitempty"`
+	StationDupesSuppressed int                         `json:"station_dupes_suppressed,omitempty"`
+	Observations           []ClusterObservationStation `json:"observations"`
 }
 
 // ClusterObservationStation is one (station, frame) tuple inside a record.
