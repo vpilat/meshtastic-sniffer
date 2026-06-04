@@ -708,6 +708,59 @@ func TestAPI_Resolve_NoStateDB(t *testing.T) {
 	}
 }
 
+// TestAPI_Resolve_CurrentModel_Happy: same seeded fixture as Happy, but
+// mode=current_model. The handler should route to the live clock-sync
+// path; the SSE event must carry replay_mode=current_model, an advisory
+// string warning that this is NOT a clean replay, and a recent
+// clock_model_time_ns (wall-clock when the resolve ran, not the event).
+func TestAPI_Resolve_CurrentModel_Happy(t *testing.T) {
+	// globalClockSync needs to exist for current_model. We don't need it
+	// to actually converge for this test; resolveWithCurrentModel falls
+	// back to a lex-smallest reference when PickReferenceStation returns
+	// empty. The solver then runs with software_lock-class observations
+	// and still produces a fix.
+	withGlobalClockSync(t, NewClockSync(DefaultClockSyncConfig()))
+	s := openTestStore(t)
+	eventNs := seedResolveFixture(t, s)
+	hub := newSSEHub()
+	r := newTestRegistryUnauthed(t)
+	h := newAPIHandlerWithHub(t, r, hub, s, "")
+
+	body := fmt.Sprintf(`{"from":"!aabbccdd","packet_id":100,"emission_seq":0,"event_time_ns":%d,"mode":"current_model"}`, eventNs)
+	req := httptest.NewRequest(http.MethodPost, "/api/resolve", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	pubs := drainHubHistory(hub)
+	if len(pubs) != 1 {
+		t.Fatalf("hub got %d events, want 1", len(pubs))
+	}
+	var ev replayEvent
+	if err := json.Unmarshal(pubs[0], &ev); err != nil {
+		t.Fatalf("decode pub: %v", err)
+	}
+	if ev.ReplayMode != "current_model" {
+		t.Errorf("replay_mode=%q want current_model", ev.ReplayMode)
+	}
+	if ev.Advisory == "" {
+		t.Errorf("advisory must be set on current_model replay")
+	}
+	if !strings.Contains(strings.ToLower(ev.Advisory), "not a clean replay") {
+		t.Errorf("advisory should warn about clean-replay; got %q", ev.Advisory)
+	}
+	// clock_model_time_ns is wall-clock-now, NOT event_time_ns.
+	if ev.ClockModelTimeNs == eventNs {
+		t.Errorf("clock_model_time_ns should differ from event_time_ns in current_model mode; got %d", ev.ClockModelTimeNs)
+	}
+	if ev.StationCount != 3 {
+		t.Errorf("station_count=%d want 3", ev.StationCount)
+	}
+}
+
 // TestAPI_Resolve_BadInputs: missing fields -> 400; bad JSON -> 400;
 // unknown mode -> 400; wrong method -> 405.
 func TestAPI_Resolve_BadInputs(t *testing.T) {

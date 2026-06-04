@@ -37,6 +37,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ResolveRequest is the POST /api/resolve wire format. Fields mirror
@@ -208,12 +209,17 @@ func resolveAtEventTime(store *EventStore, rec *ClusterObservationRecord) (
 // replayEvent is the on-wire shape of REPLAY_GEOLOCATED. Distinct from
 // the live GEOLOCATED so dashboard / export consumers can keyhole on
 // event type. clock_model_time_ns is the timestamp of the pair-offset
-// state used; for event_time mode it equals event_time_ns.
+// state used; for event_time mode it equals event_time_ns; for
+// current_model mode it equals the wall-clock time the resolve ran.
+// `advisory`, when present, is a human-readable warning attached to
+// experimental modes so a casual consumer who skips the replay_mode
+// field still sees the caveat.
 type replayEvent struct {
 	Event                string   `json:"event"`
 	SourceEventID        string   `json:"source_event_id"`
 	ReplayMode           string   `json:"replay_mode"`
 	ClockModelTimeNs     uint64   `json:"clock_model_time_ns"`
+	Advisory             string   `json:"advisory,omitempty"`
 	From                 string   `json:"from"`
 	PacketID             uint32   `json:"packet_id"`
 	EmissionSeq          int      `json:"emission_seq,omitempty"`
@@ -226,6 +232,90 @@ type replayEvent struct {
 	Degraded             bool     `json:"timestamp_class_degraded,omitempty"`
 	ClockSyncReference   string   `json:"clock_sync_reference,omitempty"`
 	PairSnapshotKeysUsed []string `json:"pair_snapshot_keys_used,omitempty"`
+}
+
+// resolveWithCurrentModel re-runs the solver against TODAY's clock
+// model, applied to the historical observations. Useful for asking
+// "what would my current calibration say about this old event?" but
+// dangerous as an operator default -- the live offsets reflect today's
+// pair-state, not the offsets that were valid when this event actually
+// happened. The UI gates this behind an Advanced disclosure and the
+// SSE event carries an advisory field so consumers can't accidentally
+// treat the result as a clean replay.
+func resolveWithCurrentModel(cs *ClockSync, rec *ClusterObservationRecord) (
+	*MlatResult, []string, string, error,
+) {
+	if rec == nil {
+		return nil, nil, "", errors.New("nil record")
+	}
+	if cs == nil {
+		return nil, nil, "", errors.New("clock-sync not running")
+	}
+	type usableObs struct {
+		o ClusterObservationStation
+	}
+	var usable []usableObs
+	for _, o := range rec.Observations {
+		if o.StationTNs == 0 || o.StationLat == 0 || o.StationLon == 0 {
+			continue
+		}
+		if o.StationTAccNs > 100_000_000 {
+			continue
+		}
+		usable = append(usable, usableObs{o})
+	}
+	if len(usable) < 3 {
+		return nil, nil, "", errors.New("insufficient stations for solve")
+	}
+
+	refStation := cs.PickReferenceStation()
+	// Fallback when clock-sync has no converged pairs yet: use the
+	// lex-smallest station name as a deterministic stand-in. The
+	// resulting solve gets degraded class but at least runs.
+	if refStation == "" {
+		names := make([]string, 0, len(usable))
+		for _, u := range usable {
+			names = append(names, u.o.Station)
+		}
+		sort.Strings(names)
+		refStation = names[0]
+	}
+
+	var pairKeysUsed []string
+	mlatObs := make([]MlatObservation, 0, len(usable))
+	for _, u := range usable {
+		o := u.o
+		obs := Observation{
+			Station: o.Station, StationLat: o.StationLat, StationLon: o.StationLon,
+			StationAltM:     o.StationAltM,
+			StationTNs:      o.StationTNs,
+			StationTAccNs:   o.StationTAccNs,
+			PreambleLockTNs: o.PreambleLockTNs,
+			SnrDB:           o.SnrDB,
+			RssiDB:          o.RssiDB,
+		}
+		lockTNs, cls := cs.CorrectAndClassify(obs, refStation)
+		if cls == TimestampSync && o.Station != refStation {
+			pairKeysUsed = append(pairKeysUsed, PairKey(o.Station, refStation))
+		}
+		mlatObs = append(mlatObs, MlatObservation{
+			StationName:         o.Station,
+			Lat:                 o.StationLat,
+			Lon:                 o.StationLon,
+			AltM:                o.StationAltM,
+			TNs:                 o.StationTNs,
+			LockTNs:             lockTNs,
+			TAccNs:              o.StationTAccNs,
+			PrecomputedClass:    cls,
+			HasPrecomputedClass: true,
+		})
+	}
+
+	res, err := Solve(mlatObs)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("solve: %w", err)
+	}
+	return res, pairKeysUsed, refStation, nil
 }
 
 // resolveHandler is the POST /api/resolve handler factory. Captures
@@ -254,12 +344,9 @@ func resolveHandler(store *EventStore, hub *SSEHub) http.HandlerFunc {
 		if req.Mode == "" {
 			req.Mode = "event_time"
 		}
-		if req.Mode != "event_time" {
-			// current_model lands in a separate commit; reject here so
-			// older clients can't accidentally trigger an experimental
-			// replay path that the backend hasn't shipped yet.
+		if req.Mode != "event_time" && req.Mode != "current_model" {
 			jsonError(w,
-				"mode must be 'event_time' (current_model replay not yet supported)",
+				"mode must be 'event_time' or 'current_model'",
 				http.StatusBadRequest)
 			return
 		}
@@ -278,7 +365,24 @@ func resolveHandler(store *EventStore, hub *SSEHub) http.HandlerFunc {
 			return
 		}
 
-		res, pairKeysUsed, refStation, err := resolveAtEventTime(store, rec)
+		var (
+			res              *MlatResult
+			pairKeysUsed     []string
+			refStation       string
+			clockModelTimeNs uint64
+			advisory         string
+		)
+		switch req.Mode {
+		case "event_time":
+			res, pairKeysUsed, refStation, err = resolveAtEventTime(store, rec)
+			clockModelTimeNs = req.EventTimeNs
+		case "current_model":
+			res, pairKeysUsed, refStation, err = resolveWithCurrentModel(globalClockSync, rec)
+			clockModelTimeNs = uint64(time.Now().UnixNano())
+			advisory = "Today's clock model applied to historical observations. " +
+				"This is NOT a clean replay; offsets reflect current state, not " +
+				"the offsets that were valid at event_time_ns. Use with caution."
+		}
 		if err != nil {
 			jsonError(w, err.Error(), http.StatusUnprocessableEntity)
 			return
@@ -288,7 +392,8 @@ func resolveHandler(store *EventStore, hub *SSEHub) http.HandlerFunc {
 			Event:                "REPLAY_GEOLOCATED",
 			SourceEventID:        req.eventID(),
 			ReplayMode:           req.Mode,
-			ClockModelTimeNs:     req.EventTimeNs,
+			ClockModelTimeNs:     clockModelTimeNs,
+			Advisory:             advisory,
 			From:                 req.From,
 			PacketID:             req.PacketID,
 			EmissionSeq:          req.EmissionSeq,
