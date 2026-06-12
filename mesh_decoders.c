@@ -427,6 +427,26 @@ static void parse_host(const uint8_t *buf, size_t len, mesh_telemetry_t *out)
     out->have_host = true;
 }
 
+static void parse_traffic_mgmt(const uint8_t *buf, size_t len, mesh_telemetry_t *out)
+{
+    const uint8_t *p = buf, *end = buf + len;
+    while (p < end) {
+        uint32_t fld, wt; uint64_t v;
+        if (!pb_read_tag(&p, end, &fld, &wt)) return;
+        switch (fld) {
+        case 1: if (!pb_read_varint(&p, end, &v)) return; out->tm_packets_inspected = (uint32_t)v; break;
+        case 2: if (!pb_read_varint(&p, end, &v)) return; out->tm_position_dedup_drops = (uint32_t)v; break;
+        case 3: if (!pb_read_varint(&p, end, &v)) return; out->tm_nodeinfo_cache_hits = (uint32_t)v; break;
+        case 4: if (!pb_read_varint(&p, end, &v)) return; out->tm_rate_limit_drops = (uint32_t)v; break;
+        case 5: if (!pb_read_varint(&p, end, &v)) return; out->tm_unknown_packet_drops = (uint32_t)v; break;
+        case 6: if (!pb_read_varint(&p, end, &v)) return; out->tm_hop_exhausted_packets = (uint32_t)v; break;
+        case 7: if (!pb_read_varint(&p, end, &v)) return; out->tm_router_hops_preserved = (uint32_t)v; break;
+        default: if (!pb_skip_value(&p, end, wt)) return; break;
+        }
+    }
+    out->have_traffic_mgmt = true;
+}
+
 bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out)
 {
     if (!buf || !out) return false;
@@ -454,6 +474,8 @@ bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out
                 parse_health(bp, blen, out); any = true; break;
         case 8: if (!pb_read_length(&p, end, &bp, &blen)) return any;
                 parse_host(bp, blen, out); any = true; break;
+        case 9: if (!pb_read_length(&p, end, &bp, &blen)) return any;
+                parse_traffic_mgmt(bp, blen, out); any = true; break;
         default: if (!pb_skip_value(&p, end, wt)) return any; break;
         }
     }

@@ -465,6 +465,19 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
                     jw_putc(j, '}');
                     jw_close_array(j);
                 }
+                if (t.have_traffic_mgmt) {
+                    jw_open_array(j, "traffic_mgmt");
+                    jw_array_sep(j); jw_putc(j, '{'); j->first_field = true;
+                    if (t.tm_packets_inspected)     jw_field_u32(j, "inspected",        t.tm_packets_inspected);
+                    if (t.tm_position_dedup_drops)  jw_field_u32(j, "pos_dedup_drops",  t.tm_position_dedup_drops);
+                    if (t.tm_nodeinfo_cache_hits)   jw_field_u32(j, "nodeinfo_hits",    t.tm_nodeinfo_cache_hits);
+                    if (t.tm_rate_limit_drops)      jw_field_u32(j, "rate_limit_drops", t.tm_rate_limit_drops);
+                    if (t.tm_unknown_packet_drops)  jw_field_u32(j, "unknown_drops",    t.tm_unknown_packet_drops);
+                    if (t.tm_hop_exhausted_packets) jw_field_u32(j, "hop_exhausted",    t.tm_hop_exhausted_packets);
+                    if (t.tm_router_hops_preserved) jw_field_u32(j, "router_hops_kept", t.tm_router_hops_preserved);
+                    jw_putc(j, '}');
+                    jw_close_array(j);
+                }
             }
             break;
         }

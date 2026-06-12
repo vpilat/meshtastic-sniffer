@@ -170,6 +170,15 @@ typedef struct mesh_telemetry {
     uint32_t host_load5_x100;
     uint32_t host_load15_x100;
     char     host_user_string[64];
+
+    bool     have_traffic_mgmt;
+    uint32_t tm_packets_inspected;
+    uint32_t tm_position_dedup_drops;
+    uint32_t tm_nodeinfo_cache_hits;
+    uint32_t tm_rate_limit_drops;
+    uint32_t tm_unknown_packet_drops;
+    uint32_t tm_hop_exhausted_packets;
+    uint32_t tm_router_hops_preserved;
 } mesh_telemetry_t;
 bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out);
 

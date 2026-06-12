@@ -185,6 +185,26 @@ static void test_telemetry_host(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* TrafficManagementStats: Telemetry envelope dispatches field 9.     */
+/* ------------------------------------------------------------------ */
+static const uint8_t TELEMETRY_TRAFFIC_FIXTURE[] = {
+    0x4A, 0x09, 0x08, 0x88, 0x27, 0x10, 0x0C, 0x20, 0x03, 0x38, 0x11,
+};
+
+static void test_telemetry_traffic(void)
+{
+    mesh_telemetry_t t;
+    bool ok = mesh_decode_telemetry(TELEMETRY_TRAFFIC_FIXTURE,
+                                    sizeof(TELEMETRY_TRAFFIC_FIXTURE), &t);
+    CHECK(ok, "mesh_decode_telemetry returned false on TrafficManagement payload");
+    CHECK(t.have_traffic_mgmt, "have_traffic_mgmt not set");
+    CHECK(t.tm_packets_inspected == 5000u,    "inspected: got %u want 5000",  t.tm_packets_inspected);
+    CHECK(t.tm_position_dedup_drops == 12u,   "pos_dedup_drops: got %u want 12", t.tm_position_dedup_drops);
+    CHECK(t.tm_rate_limit_drops == 3u,        "rate_limit_drops: got %u want 3", t.tm_rate_limit_drops);
+    CHECK(t.tm_router_hops_preserved == 17u,  "router_hops_kept: got %u want 17", t.tm_router_hops_preserved);
+}
+
+/* ------------------------------------------------------------------ */
 /* 5. PowerMetrics ch8 voltage+current land in the right struct slot. */
 /* ------------------------------------------------------------------ */
 static const uint8_t TELEMETRY_POWER_CH8_FIXTURE[] = {
@@ -245,6 +265,7 @@ int main(void)
     test_telemetry_local_stats();
     test_telemetry_health();
     test_telemetry_host();
+    test_telemetry_traffic();
     test_power_metrics_ch8();
     test_atak_geochat_receipt();
 
