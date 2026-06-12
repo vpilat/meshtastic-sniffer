@@ -334,33 +334,32 @@ bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out
     return any;
 }
 
-/* RouteDiscovery sub-message: repeated fixed32 route = 1. We pull the
- * node-ID path; per-hop SNRs (fields 2/4) and reverse path (field 3)
- * skipped for now. */
+/* RouteDiscovery sub-message: repeated uint32 route = 1 (varint),
+ * repeated int32 snr_towards = 2, repeated uint32 route_back = 3,
+ * repeated int32 snr_back = 4. We surface the node-ID path; SNRs and
+ * reverse path skipped for now. */
 static void parse_route_discovery(const uint8_t *buf, size_t len, mesh_routing_t *out)
 {
+    const int route_cap = (int)(sizeof(out->route)/sizeof(out->route[0]));
     const uint8_t *p = buf, *end = buf + len;
     while (p < end) {
         uint32_t fld, wt;
         if (!pb_read_tag(&p, end, &fld, &wt)) return;
         if (fld == 1) {
-            /* Repeated fixed32 -- can be packed (length-delim block of fixed32s)
-             * or unpacked (one tag per element). Handle both. */
-            if (wt == 5) {
-                uint32_t f;
-                if (!pb_read_fixed32(&p, end, &f)) return;
-                if (out->n_route < (int)(sizeof(out->route)/sizeof(out->route[0])))
-                    out->route[out->n_route++] = f;
+            if (wt == 0) {
+                /* Unpacked varint, one tag per element. */
+                uint64_t v;
+                if (!pb_read_varint(&p, end, &v)) return;
+                if (out->n_route < route_cap) out->route[out->n_route++] = (uint32_t)v;
             } else if (wt == 2) {
+                /* Packed varint block. */
                 const uint8_t *bp; size_t blen;
                 if (!pb_read_length(&p, end, &bp, &blen)) return;
-                while (bp + 4 <= buf + len &&
-                       out->n_route < (int)(sizeof(out->route)/sizeof(out->route[0])) &&
-                       blen >= 4) {
-                    uint32_t f = (uint32_t)bp[0] | ((uint32_t)bp[1] << 8) |
-                                 ((uint32_t)bp[2] << 16) | ((uint32_t)bp[3] << 24);
-                    out->route[out->n_route++] = f;
-                    bp += 4; blen -= 4;
+                const uint8_t *q = bp, *qend = bp + blen;
+                while (q < qend && out->n_route < route_cap) {
+                    uint64_t v;
+                    if (!pb_read_varint(&q, qend, &v)) break;
+                    out->route[out->n_route++] = (uint32_t)v;
                 }
             } else {
                 if (!pb_skip_value(&p, end, wt)) return;
@@ -731,7 +730,7 @@ bool mesh_decode_traceroute(const uint8_t *buf, size_t len, mesh_traceroute_t *o
                     while (q < qend && i < 16) {
                         uint64_t v;
                         if (!pb_read_varint(&q, qend, &v)) break;
-                        out->snr_towards[i++] = (int8_t)pb_zigzag32((uint32_t)v);
+                        out->snr_towards[i++] = (int8_t)(int32_t)v;
                     }
                     out->snr_towards_len = i;
                 }
@@ -745,7 +744,7 @@ bool mesh_decode_traceroute(const uint8_t *buf, size_t len, mesh_traceroute_t *o
                     while (q < qend && i < 16) {
                         uint64_t v;
                         if (!pb_read_varint(&q, qend, &v)) break;
-                        out->snr_back[i++] = (int8_t)pb_zigzag32((uint32_t)v);
+                        out->snr_back[i++] = (int8_t)(int32_t)v;
                     }
                     out->snr_back_len = i;
                 }
