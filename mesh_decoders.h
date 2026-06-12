@@ -235,14 +235,12 @@ bool mesh_decode_neighborinfo(const uint8_t *buf, size_t len, mesh_neighborinfo_
 
 /* ---- KEY_VERIFICATION_APP (port 12) ----
  *
- * KeyVerification message: { nonce uint64, hash1 bytes, hash2 bytes,
- * remote_node_id uint32 }. We surface only the non-secret metadata
- * (nonce, remote_node_id, hash sizes) so observers can see that two
- * nodes are exchanging key-verification messages without leaking the
- * hashes themselves to the JSON feed. */
+ * KeyVerification message: { nonce uint64, hash1 bytes, hash2 bytes }.
+ * We surface only the non-secret metadata (nonce, hash sizes) so
+ * observers can see that two nodes are exchanging key-verification
+ * messages without leaking the hashes themselves to the JSON feed. */
 typedef struct mesh_keyverif {
     uint64_t nonce;
-    uint32_t remote_node_id;
     int      hash1_len;
     int      hash2_len;
 } mesh_keyverif_t;

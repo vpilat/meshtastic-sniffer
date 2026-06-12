@@ -523,9 +523,9 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
         case MESH_PORT_KEY_VERIFICATION: {
             mesh_keyverif_t kv;
             if (mesh_decode_keyverif(ev->payload, ev->payload_len, &kv)) {
-                if (kv.remote_node_id) jw_field_u32(j, "kv_remote", kv.remote_node_id);
-                if (kv.hash1_len)      jw_field_u32(j, "kv_hash1_len", (uint32_t)kv.hash1_len);
-                if (kv.hash2_len)      jw_field_u32(j, "kv_hash2_len", (uint32_t)kv.hash2_len);
+                if (kv.nonce)     jw_field_u64(j, "kv_nonce", kv.nonce);
+                if (kv.hash1_len) jw_field_u32(j, "kv_hash1_len", (uint32_t)kv.hash1_len);
+                if (kv.hash2_len) jw_field_u32(j, "kv_hash2_len", (uint32_t)kv.hash2_len);
             }
             break;
         }

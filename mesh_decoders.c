@@ -512,9 +512,9 @@ bool mesh_decode_neighborinfo(const uint8_t *buf, size_t len, mesh_neighborinfo_
 
 /* ---- KEY_VERIFICATION_APP -- subset of meshtastic.KeyVerification ----
  *
- * Only the metadata: nonce, remote_node_id, hash sizes. We do not
- * surface the hash bytes -- they could be used to fingerprint a
- * verification exchange, and the JSON feed crosses trust boundaries. */
+ * Only the metadata: nonce, hash sizes. We do not surface the hash
+ * bytes -- they could be used to fingerprint a verification exchange,
+ * and the JSON feed crosses trust boundaries. */
 bool mesh_decode_keyverif(const uint8_t *buf, size_t len, mesh_keyverif_t *out)
 {
     if (!buf || !out) return false;
@@ -528,11 +528,10 @@ bool mesh_decode_keyverif(const uint8_t *buf, size_t len, mesh_keyverif_t *out)
         case 1: if (!pb_read_varint(&p, end, &v)) return false; out->nonce = v; break;
         case 2: if (!pb_read_length(&p, end, &bp, &blen)) return false; out->hash1_len = (int)blen; break;
         case 3: if (!pb_read_length(&p, end, &bp, &blen)) return false; out->hash2_len = (int)blen; break;
-        case 4: if (!pb_read_varint(&p, end, &v)) return false; out->remote_node_id = (uint32_t)v; break;
         default: if (!pb_skip_value(&p, end, wt)) return false; break;
         }
     }
-    return out->nonce != 0 || out->remote_node_id != 0;
+    return out->nonce != 0 || out->hash1_len != 0 || out->hash2_len != 0;
 }
 
 /* ---- MAP_REPORT_APP -- meshtastic.MapReport ---- */
