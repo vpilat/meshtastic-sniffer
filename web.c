@@ -1447,11 +1447,41 @@ static int b64v(char c) {
 /* meshtastic.org/e/ URLs are of the form:
  *   meshtastic.org/e/?#CgUYAyIBAQ           (single-channel base64-url)
  *   meshtastic.org/e/?#CHANNELSET=BASE64URL (also seen)
- * The base64-url payload is a protobuf ChannelSet { Channel channels = 1 }
- * where each Channel has a settings { name, psk } sub-message.
+ * The base64-url payload is a protobuf ChannelSet { Channel channels = 1 }.
+ *
+ *   Channel { int32 index = 1; ChannelSettings settings = 2; Role role = 3; }
+ *   ChannelSettings { uint32 channel_num = 1 [deprecated];
+ *                     bytes psk = 2; string name = 3; ... }
  *
  * For each channel found, calls keyset_add(name, psk_bytes, psk_len).
  * Returns the number of channels added, or -1 on parse error. */
+static int share_skip(const uint8_t **pp, const uint8_t *end, uint32_t wt)
+{
+    const uint8_t *p = *pp;
+    if (wt == 0) {
+        while (p < end && (*p++ & 0x80)) {}
+    } else if (wt == 1) {
+        if (end - p < 8) return -1;
+        p += 8;
+    } else if (wt == 2) {
+        uint64_t l = 0; int sh = 0;
+        while (p < end) {
+            uint8_t b = *p++;
+            l |= (uint64_t)(b & 0x7f) << sh;
+            if (!(b & 0x80)) break;
+            sh += 7;
+        }
+        if ((uint64_t)(end - p) < l) return -1;
+        p += (size_t)l;
+    } else if (wt == 5) {
+        if (end - p < 4) return -1;
+        p += 4;
+    } else {
+        return -1;
+    }
+    *pp = p;
+    return 0;
+}
 /* Public wrapper so main.c can use the same decoder for --share-url. */
 int web_decode_share_url(keyset_t *ks, const char *url) { extern int decode_channel_share(keyset_t *, const char *); return decode_channel_share(ks, url); }
 
@@ -1514,7 +1544,7 @@ int decode_channel_share(keyset_t *ks, const char *url_or_b64)
 
             if (fld != 1) continue;  /* not a Channel */
 
-            /* Parse Channel: look for field 1 (settings) submessage. */
+            /* Parse Channel: look for field 2 (settings) submessage. */
             uint8_t  psk[32]; size_t psk_len = 0;
             char     name[32]; name[0] = 0;
             while (cp < cend) {
@@ -1527,7 +1557,10 @@ int decode_channel_share(keyset_t *ks, const char *url_or_b64)
                 }
                 uint32_t f2 = (uint32_t)(t2 >> 3);
                 uint32_t w2 = (uint32_t)(t2 & 0x7);
-                if (w2 != 2) continue;
+                if (f2 != 2 || w2 != 2) {
+                    if (share_skip(&cp, cend, w2) < 0) break;
+                    continue;
+                }
                 uint64_t l2 = 0; s2 = 0;
                 while (cp < cend) {
                     uint8_t b = *cp++;
@@ -1537,9 +1570,8 @@ int decode_channel_share(keyset_t *ks, const char *url_or_b64)
                 }
                 if ((uint64_t)(cend - cp) < l2) break;
                 const uint8_t *sp = cp; const uint8_t *send = cp + l2; cp += l2;
-                if (f2 != 1) continue;     /* not the settings sub-message */
 
-                /* Parse ChannelSettings: field 1 = psk (bytes), field 2 = name (string). */
+                /* Parse ChannelSettings: field 2 = psk (bytes), field 3 = name (string). */
                 while (sp < send) {
                     uint64_t t3 = 0; int s3 = 0;
                     while (sp < send) {
@@ -1550,7 +1582,10 @@ int decode_channel_share(keyset_t *ks, const char *url_or_b64)
                     }
                     uint32_t f3 = (uint32_t)(t3 >> 3);
                     uint32_t w3 = (uint32_t)(t3 & 0x7);
-                    if (w3 != 2) continue;
+                    if (w3 != 2) {
+                        if (share_skip(&sp, send, w3) < 0) break;
+                        continue;
+                    }
                     uint64_t l3 = 0; s3 = 0;
                     while (sp < send) {
                         uint8_t b = *sp++;
@@ -1559,9 +1594,9 @@ int decode_channel_share(keyset_t *ks, const char *url_or_b64)
                         s3 += 7;
                     }
                     if ((uint64_t)(send - sp) < l3) break;
-                    if (f3 == 1 && l3 <= sizeof(psk)) {   /* psk */
+                    if (f3 == 2 && l3 <= sizeof(psk)) {        /* psk */
                         memcpy(psk, sp, l3); psk_len = (size_t)l3;
-                    } else if (f3 == 2 && l3 < sizeof(name)) {
+                    } else if (f3 == 3 && l3 < sizeof(name)) { /* name */
                         memcpy(name, sp, l3); name[l3] = 0;
                     }
                     sp += l3;
