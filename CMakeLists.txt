@@ -15,11 +15,22 @@ if(APPLE)
 endif()
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-common -Wall -Wextra -Wno-unused-parameter -std=c99 -Werror=implicit-function-declaration")
-set(CMAKE_C_FLAGS_DEBUG "-ggdb3 -g3 -O0 -fsanitize=address")
+if(NOT DEFINED MESH_SAN)
+    set(MESH_SAN "address")
+endif()
+# Debug build picks a sanitizer via -DMESH_SAN={address,thread,undefined}.
+# Default 'address' matches the historical behavior. Use 'thread' for TSAN
+# (and disable LTO with -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF; TSAN
+# also needs ASLR off at runtime: 'setarch -R').
+if(MESH_SAN STREQUAL "thread")
+    set(CMAKE_C_FLAGS_DEBUG "-ggdb3 -g3 -O1 -fsanitize=thread -fno-omit-frame-pointer")
+else()
+    set(CMAKE_C_FLAGS_DEBUG "-ggdb3 -g3 -O0 -fsanitize=${MESH_SAN}")
+endif()
 set(CMAKE_C_FLAGS_MINSIZEREL "-Os")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -march=native -ggdb3 -g3")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -march=native")
-set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address")
+set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=${MESH_SAN}")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING
