@@ -520,17 +520,24 @@ int main(int argc, char **argv)
         #undef EMIT_FRAME_TRIPLE
 
         fclose(hf);
+
+        const bool   has_name  = channel_name && *channel_name;
+        const bool   show_merge = hashcat_merge != 1;
+        char         ctx[160] = "";
+        if (has_name && show_merge)
+            snprintf(ctx, sizeof(ctx), " (channel_name=%s, merge=%d)",
+                     channel_name, hashcat_merge);
+        else if (has_name)
+            snprintf(ctx, sizeof(ctx), " (channel_name=%s)", channel_name);
+        else if (show_merge)
+            snprintf(ctx, sizeof(ctx), " (merge=%d)", hashcat_merge);
+
         if (hashcat_merge == 1) {
-            fprintf(stderr, "recover: wrote %zu hashcat-format lines to %s%s%s\n",
-                    emitted_v1, hashcat_path,
-                    channel_name && *channel_name ? " (channel_name=" : "",
-                    channel_name && *channel_name ? channel_name : "");
+            fprintf(stderr, "recover: wrote %zu hashcat-format lines to %s%s\n",
+                    emitted_v1, hashcat_path, ctx);
         } else {
-            fprintf(stderr, "recover: wrote %zu $meshtastic$1 + %zu $meshtastic$2 lines to %s%s%s (merge=%d)\n",
-                    emitted_v1, emitted_v2, hashcat_path,
-                    channel_name && *channel_name ? " (channel_name=" : "",
-                    channel_name && *channel_name ? channel_name : "",
-                    hashcat_merge);
+            fprintf(stderr, "recover: wrote %zu $meshtastic$1 + %zu $meshtastic$2 lines to %s%s\n",
+                    emitted_v1, emitted_v2, hashcat_path, ctx);
         }
     }
 
