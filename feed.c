@@ -497,9 +497,13 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
                     if (a.speed_mps)  jw_field_u32(j, "speed_mps", a.speed_mps);
                     if (a.course_deg) jw_field_u32(j, "course_deg", a.course_deg);
                 } else if (a.kind == MESH_ATAK_CHAT) {
-                    static const char *receipt_name[] = { NULL, "delivered", "read" };
-                    if (a.chat_receipt_type && a.chat_receipt_type < 3 && receipt_name[a.chat_receipt_type])
-                        jw_field_str(j, "atak_chat_receipt", receipt_name[a.chat_receipt_type]);
+                    const char *receipt = NULL;
+                    switch (a.chat_receipt_type) {
+                    case 1: receipt = "delivered"; break;
+                    case 2: receipt = "read";      break;
+                    default: break;
+                    }
+                    if (receipt) jw_field_str(j, "atak_chat_receipt", receipt);
                     if (a.chat_message[0]) jw_field_str(j, "atak_chat", a.chat_message);
                     if (a.chat_to[0])      jw_field_str(j, "atak_chat_to", a.chat_to);
                     if (a.chat_to_callsign[0])
