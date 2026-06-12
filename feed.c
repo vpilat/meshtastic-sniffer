@@ -441,6 +441,15 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
                     jw_putc(j, '}');
                     jw_close_array(j);
                 }
+                if (t.have_health) {
+                    jw_open_array(j, "health");
+                    jw_array_sep(j); jw_putc(j, '{'); j->first_field = true;
+                    if (t.health_heart_bpm)      jw_field_u32(j, "heart_bpm",   t.health_heart_bpm);
+                    if (t.health_spo2)           jw_field_u32(j, "spo2",        t.health_spo2);
+                    if (t.health_temperature_c)  jw_field_f32(j, "body_temp_c", t.health_temperature_c);
+                    jw_putc(j, '}');
+                    jw_close_array(j);
+                }
             }
             break;
         }

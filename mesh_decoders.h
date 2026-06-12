@@ -154,6 +154,11 @@ typedef struct mesh_telemetry {
     uint32_t local_heap_free_bytes;
     uint32_t local_num_tx_dropped;
     int32_t  local_noise_floor_dbm;
+
+    bool     have_health;
+    uint32_t health_heart_bpm;
+    uint32_t health_spo2;
+    float    health_temperature_c;
 } mesh_telemetry_t;
 bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out);
 

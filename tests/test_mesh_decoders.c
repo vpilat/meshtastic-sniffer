@@ -141,6 +141,27 @@ static void test_telemetry_local_stats(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* HealthMetrics: Telemetry envelope dispatches field 7.              */
+/* ------------------------------------------------------------------ */
+static const uint8_t TELEMETRY_HEALTH_FIXTURE[] = {
+    0x3A, 0x09, 0x08, 0x48, 0x10, 0x61, 0x1D, 0x66, 0x66, 0x12, 0x42,
+};
+
+static void test_telemetry_health(void)
+{
+    mesh_telemetry_t t;
+    bool ok = mesh_decode_telemetry(TELEMETRY_HEALTH_FIXTURE,
+                                    sizeof(TELEMETRY_HEALTH_FIXTURE), &t);
+    CHECK(ok, "mesh_decode_telemetry returned false on Health payload");
+    CHECK(t.have_health, "have_health not set");
+    CHECK(t.health_heart_bpm == 72u, "heart_bpm: got %u want 72", t.health_heart_bpm);
+    CHECK(t.health_spo2 == 97u,      "spo2: got %u want 97",      t.health_spo2);
+    CHECK(t.health_temperature_c > 36.59f && t.health_temperature_c < 36.61f,
+          "health_temperature_c: got %.4f want ~36.6",
+          (double)t.health_temperature_c);
+}
+
+/* ------------------------------------------------------------------ */
 /* 5. PowerMetrics ch8 voltage+current land in the right struct slot. */
 /* ------------------------------------------------------------------ */
 static const uint8_t TELEMETRY_POWER_CH8_FIXTURE[] = {
@@ -199,6 +220,7 @@ int main(void)
     test_storeforward_rr_labels();
     test_telemetry_air_quality();
     test_telemetry_local_stats();
+    test_telemetry_health();
     test_power_metrics_ch8();
     test_atak_geochat_receipt();
 

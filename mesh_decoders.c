@@ -387,6 +387,22 @@ static void parse_local_stats(const uint8_t *buf, size_t len, mesh_telemetry_t *
     out->have_local_stats = true;
 }
 
+static void parse_health(const uint8_t *buf, size_t len, mesh_telemetry_t *out)
+{
+    const uint8_t *p = buf, *end = buf + len;
+    while (p < end) {
+        uint32_t fld, wt; uint64_t v; uint32_t f32;
+        if (!pb_read_tag(&p, end, &fld, &wt)) return;
+        switch (fld) {
+        case 1: if (!pb_read_varint(&p, end, &v)) return; out->health_heart_bpm = (uint32_t)v; break;
+        case 2: if (!pb_read_varint(&p, end, &v)) return; out->health_spo2 = (uint32_t)v; break;
+        case 3: if (!pb_read_fixed32(&p, end, &f32)) return; out->health_temperature_c = u32_as_float(f32); break;
+        default: if (!pb_skip_value(&p, end, wt)) return; break;
+        }
+    }
+    out->have_health = true;
+}
+
 bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out)
 {
     if (!buf || !out) return false;
@@ -410,6 +426,8 @@ bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out
                 parse_power_metrics(bp, blen, out); any = true; break;
         case 6: if (!pb_read_length(&p, end, &bp, &blen)) return any;
                 parse_local_stats(bp, blen, out); any = true; break;
+        case 7: if (!pb_read_length(&p, end, &bp, &blen)) return any;
+                parse_health(bp, blen, out); any = true; break;
         default: if (!pb_skip_value(&p, end, wt)) return any; break;
         }
     }
