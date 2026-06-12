@@ -439,7 +439,8 @@ static void parse_one_neighbor(const uint8_t *buf, size_t len, mesh_neighbor_t *
         case 1: if (!pb_read_varint(&p, end, &v)) return; n->node_id = (uint32_t)v; break;
         case 2: { uint32_t f; if (!pb_read_fixed32(&p, end, &f)) return;
                   n->snr_db = u32_as_float(f); break; }
-        case 3: if (!pb_read_varint(&p, end, &v)) return; n->last_rx_time = (uint32_t)v; break;
+        case 3: { uint32_t f; if (!pb_read_fixed32(&p, end, &f)) return;
+                  n->last_rx_time = f; break; }
         case 4: if (!pb_read_varint(&p, end, &v)) return; n->node_broadcast_interval_secs = (uint32_t)v; break;
         default: if (!pb_skip_value(&p, end, wt)) return; break;
         }
