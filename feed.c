@@ -450,6 +450,21 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
                     jw_putc(j, '}');
                     jw_close_array(j);
                 }
+                if (t.have_host) {
+                    jw_open_array(j, "host");
+                    jw_array_sep(j); jw_putc(j, '{'); j->first_field = true;
+                    if (t.host_uptime_s)         jw_field_u32(j, "uptime_s",      t.host_uptime_s);
+                    if (t.host_freemem_bytes)    jw_field_u64(j, "freemem_bytes", t.host_freemem_bytes);
+                    if (t.host_diskfree1_bytes)  jw_field_u64(j, "disk1_bytes",   t.host_diskfree1_bytes);
+                    if (t.host_diskfree2_bytes)  jw_field_u64(j, "disk2_bytes",   t.host_diskfree2_bytes);
+                    if (t.host_diskfree3_bytes)  jw_field_u64(j, "disk3_bytes",   t.host_diskfree3_bytes);
+                    if (t.host_load1_x100)       jw_field_u32(j, "load1_x100",    t.host_load1_x100);
+                    if (t.host_load5_x100)       jw_field_u32(j, "load5_x100",    t.host_load5_x100);
+                    if (t.host_load15_x100)      jw_field_u32(j, "load15_x100",   t.host_load15_x100);
+                    if (t.host_user_string[0])   jw_field_str(j, "user_string",   t.host_user_string);
+                    jw_putc(j, '}');
+                    jw_close_array(j);
+                }
             }
             break;
         }

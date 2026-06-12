@@ -162,6 +162,29 @@ static void test_telemetry_health(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* HostMetrics: Telemetry envelope dispatches field 8.                */
+/* ------------------------------------------------------------------ */
+static const uint8_t TELEMETRY_HOST_FIXTURE[] = {
+    0x42, 0x15, 0x08, 0x90, 0x1C, 0x10, 0xCD, 0xD7, 0xA6, 0xBC, 0xD6, 0xE8,
+    0x48, 0x30, 0x19, 0x4A, 0x06, 0x72, 0x70, 0x69, 0x2D, 0x35, 0x62,
+};
+
+static void test_telemetry_host(void)
+{
+    mesh_telemetry_t t;
+    bool ok = mesh_decode_telemetry(TELEMETRY_HOST_FIXTURE,
+                                    sizeof(TELEMETRY_HOST_FIXTURE), &t);
+    CHECK(ok, "mesh_decode_telemetry returned false on Host payload");
+    CHECK(t.have_host, "have_host not set");
+    CHECK(t.host_uptime_s == 3600u, "uptime_s: got %u want 3600", t.host_uptime_s);
+    CHECK(t.host_freemem_bytes == 0x123456789ABCDULL,
+          "freemem 64-bit: got %llu want 320255973501901 (proves u64 varint path)",
+          (unsigned long long)t.host_freemem_bytes);
+    CHECK(t.host_load1_x100 == 25u, "load1_x100: got %u want 25", t.host_load1_x100);
+    CHECK_STR(t.host_user_string, "rpi-5b");
+}
+
+/* ------------------------------------------------------------------ */
 /* 5. PowerMetrics ch8 voltage+current land in the right struct slot. */
 /* ------------------------------------------------------------------ */
 static const uint8_t TELEMETRY_POWER_CH8_FIXTURE[] = {
@@ -221,6 +244,7 @@ int main(void)
     test_telemetry_air_quality();
     test_telemetry_local_stats();
     test_telemetry_health();
+    test_telemetry_host();
     test_power_metrics_ch8();
     test_atak_geochat_receipt();
 

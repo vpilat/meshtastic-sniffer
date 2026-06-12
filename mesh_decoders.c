@@ -403,6 +403,30 @@ static void parse_health(const uint8_t *buf, size_t len, mesh_telemetry_t *out)
     out->have_health = true;
 }
 
+static void parse_host(const uint8_t *buf, size_t len, mesh_telemetry_t *out)
+{
+    const uint8_t *p = buf, *end = buf + len;
+    while (p < end) {
+        uint32_t fld, wt; uint64_t v;
+        if (!pb_read_tag(&p, end, &fld, &wt)) return;
+        const uint8_t *bp; size_t blen;
+        switch (fld) {
+        case 1: if (!pb_read_varint(&p, end, &v)) return; out->host_uptime_s = (uint32_t)v; break;
+        case 2: if (!pb_read_varint(&p, end, &v)) return; out->host_freemem_bytes = v; break;
+        case 3: if (!pb_read_varint(&p, end, &v)) return; out->host_diskfree1_bytes = v; break;
+        case 4: if (!pb_read_varint(&p, end, &v)) return; out->host_diskfree2_bytes = v; break;
+        case 5: if (!pb_read_varint(&p, end, &v)) return; out->host_diskfree3_bytes = v; break;
+        case 6: if (!pb_read_varint(&p, end, &v)) return; out->host_load1_x100 = (uint32_t)v; break;
+        case 7: if (!pb_read_varint(&p, end, &v)) return; out->host_load5_x100 = (uint32_t)v; break;
+        case 8: if (!pb_read_varint(&p, end, &v)) return; out->host_load15_x100 = (uint32_t)v; break;
+        case 9: if (!pb_read_length(&p, end, &bp, &blen)) return;
+                copy_str(out->host_user_string, sizeof(out->host_user_string), bp, blen); break;
+        default: if (!pb_skip_value(&p, end, wt)) return; break;
+        }
+    }
+    out->have_host = true;
+}
+
 bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out)
 {
     if (!buf || !out) return false;
@@ -428,6 +452,8 @@ bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out
                 parse_local_stats(bp, blen, out); any = true; break;
         case 7: if (!pb_read_length(&p, end, &bp, &blen)) return any;
                 parse_health(bp, blen, out); any = true; break;
+        case 8: if (!pb_read_length(&p, end, &bp, &blen)) return any;
+                parse_host(bp, blen, out); any = true; break;
         default: if (!pb_skip_value(&p, end, wt)) return any; break;
         }
     }

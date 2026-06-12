@@ -159,6 +159,17 @@ typedef struct mesh_telemetry {
     uint32_t health_heart_bpm;
     uint32_t health_spo2;
     float    health_temperature_c;
+
+    bool     have_host;
+    uint32_t host_uptime_s;
+    uint64_t host_freemem_bytes;
+    uint64_t host_diskfree1_bytes;
+    uint64_t host_diskfree2_bytes;
+    uint64_t host_diskfree3_bytes;
+    uint32_t host_load1_x100;
+    uint32_t host_load5_x100;
+    uint32_t host_load15_x100;
+    char     host_user_string[64];
 } mesh_telemetry_t;
 bool mesh_decode_telemetry(const uint8_t *buf, size_t len, mesh_telemetry_t *out);
 
