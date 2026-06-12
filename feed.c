@@ -427,10 +427,19 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
                     if (a.speed_mps)  jw_field_u32(j, "speed_mps", a.speed_mps);
                     if (a.course_deg) jw_field_u32(j, "course_deg", a.course_deg);
                 } else if (a.kind == MESH_ATAK_CHAT) {
+                    static const char *receipt_name[] = { NULL, "delivered", "read" };
+                    if (a.chat_receipt_type && a.chat_receipt_type < 3 && receipt_name[a.chat_receipt_type])
+                        jw_field_str(j, "atak_chat_receipt", receipt_name[a.chat_receipt_type]);
                     if (a.chat_message[0]) jw_field_str(j, "atak_chat", a.chat_message);
                     if (a.chat_to[0])      jw_field_str(j, "atak_chat_to", a.chat_to);
                     if (a.chat_to_callsign[0])
                         jw_field_str(j, "atak_chat_to_callsign", a.chat_to_callsign);
+                    if (a.chat_receipt_for_uid[0])
+                        jw_field_str(j, "atak_chat_receipt_for", a.chat_receipt_for_uid);
+                    if (a.chat_lang[0])    jw_field_str(j, "atak_chat_lang", a.chat_lang);
+                    if (a.chat_room_id[0]) jw_field_str(j, "atak_chat_room", a.chat_room_id);
+                    if (a.chat_has_voice_profile)
+                        jw_field_str(j, "atak_chat_taktalk", "1");
                 }
                 /* CoT multicast republish on PLI / DETAIL. */
                 cot_publish_atak(ev, &a);

@@ -194,6 +194,11 @@ typedef struct mesh_atak {
     char     chat_message[200];
     char     chat_to[64];
     char     chat_to_callsign[32];
+    char     chat_receipt_for_uid[64];   /* GeoChat field 4: uid of acked message */
+    uint32_t chat_receipt_type;          /* GeoChat field 5: 0 normal, 1 delivered, 2 read */
+    char     chat_lang[16];              /* GeoChat field 6: TAKTALK language tag */
+    char     chat_room_id[40];           /* GeoChat field 7: TAKTALK chatroom UUID */
+    bool     chat_has_voice_profile;     /* GeoChat field 8: TAKTALK voice profile marker */
 
     /* DETAIL variant -- raw CoT XML bytes for republish */
     const uint8_t *detail_xml;

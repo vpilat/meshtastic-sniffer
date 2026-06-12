@@ -694,7 +694,7 @@ static void parse_chat(const uint8_t *buf, size_t len, mesh_atak_t *out)
     while (p < end) {
         uint32_t fld, wt;
         if (!pb_read_tag(&p, end, &fld, &wt)) return;
-        const uint8_t *bp; size_t blen;
+        const uint8_t *bp; size_t blen; uint64_t v;
         switch (fld) {
         case 1: if (!pb_read_length(&p, end, &bp, &blen)) return;
                 copy_str(out->chat_message, sizeof(out->chat_message), bp, blen); break;
@@ -702,6 +702,16 @@ static void parse_chat(const uint8_t *buf, size_t len, mesh_atak_t *out)
                 copy_str(out->chat_to, sizeof(out->chat_to), bp, blen); break;
         case 3: if (!pb_read_length(&p, end, &bp, &blen)) return;
                 copy_str(out->chat_to_callsign, sizeof(out->chat_to_callsign), bp, blen); break;
+        case 4: if (!pb_read_length(&p, end, &bp, &blen)) return;
+                copy_str(out->chat_receipt_for_uid, sizeof(out->chat_receipt_for_uid), bp, blen); break;
+        case 5: if (!pb_read_varint(&p, end, &v)) return;
+                out->chat_receipt_type = (uint32_t)v; break;
+        case 6: if (!pb_read_length(&p, end, &bp, &blen)) return;
+                copy_str(out->chat_lang, sizeof(out->chat_lang), bp, blen); break;
+        case 7: if (!pb_read_length(&p, end, &bp, &blen)) return;
+                copy_str(out->chat_room_id, sizeof(out->chat_room_id), bp, blen); break;
+        case 8: if (!pb_read_length(&p, end, &bp, &blen)) return;
+                out->chat_has_voice_profile = true; (void)bp; (void)blen; break;
         default: if (!pb_skip_value(&p, end, wt)) return; break;
         }
     }
