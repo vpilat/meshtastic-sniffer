@@ -171,7 +171,7 @@ static void make_simple_psk(int n, uint8_t out[16])
 static bool fill_candidate(const char *line, candidate_t *c)
 {
     memset(c, 0, sizeof(*c));
-    strncpy(c->source, line, sizeof(c->source) - 1);
+    snprintf(c->source, sizeof(c->source), "%s", line);
 
     if (!strncmp(line, "base64:", 7)) {
         int n = parse_b64(line + 7, c->psk, sizeof(c->psk));
