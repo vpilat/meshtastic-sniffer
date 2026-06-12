@@ -213,31 +213,77 @@ static void parse_device_metrics(const uint8_t *buf, size_t len, mesh_telemetry_
     out->have_device = true;
 }
 
+/* EnvironmentMetrics: float fields are wire-type 5 fixed32 (read as u32
+ * then bit-cast); iaq, wind_direction, soil_moisture are uint32 varint
+ * (wire-type 0). Field numbers and types mirror the current upstream
+ * proto, including a swap that previously had wind_gust/wind_lull living
+ * on the wrong field numbers. */
 static void parse_env_metrics(const uint8_t *buf, size_t len, mesh_telemetry_t *out)
 {
     const uint8_t *p = buf, *end = buf + len;
     while (p < end) {
         uint32_t fld, wt;
         if (!pb_read_tag(&p, end, &fld, &wt)) return;
-        uint32_t f32;
+        uint32_t f32; uint64_t v;
         switch (fld) {
-        case 1: if (!pb_read_fixed32(&p, end, &f32)) return; out->temperature_c           = u32_as_float(f32); break;
-        case 2: if (!pb_read_fixed32(&p, end, &f32)) return; out->relative_humidity       = u32_as_float(f32); break;
-        case 3: if (!pb_read_fixed32(&p, end, &f32)) return; out->barometric_pressure_hpa = u32_as_float(f32); break;
-        case 4: if (!pb_read_fixed32(&p, end, &f32)) return; out->gas_resistance          = u32_as_float(f32); break;
-        case 5: if (!pb_read_fixed32(&p, end, &f32)) return; out->voltage_env             = u32_as_float(f32); break;
-        case 6: if (!pb_read_fixed32(&p, end, &f32)) return; out->current                 = u32_as_float(f32); break;
-        case 7: if (!pb_read_fixed32(&p, end, &f32)) return; out->iaq                     = u32_as_float(f32); break;
-        case 8: if (!pb_read_fixed32(&p, end, &f32)) return; out->distance_mm             = u32_as_float(f32); break;
-        case 9: if (!pb_read_fixed32(&p, end, &f32)) return; out->lux                     = u32_as_float(f32); break;
-        case 10:if (!pb_read_fixed32(&p, end, &f32)) return; out->white_lux               = u32_as_float(f32); break;
-        case 11:if (!pb_read_fixed32(&p, end, &f32)) return; out->ir_lumens               = u32_as_float(f32); break;
-        case 12:if (!pb_read_fixed32(&p, end, &f32)) return; out->uv_lux                  = u32_as_float(f32); break;
-        case 13:if (!pb_read_fixed32(&p, end, &f32)) return; out->wind_direction          = u32_as_float(f32); break;
-        case 14:if (!pb_read_fixed32(&p, end, &f32)) return; out->wind_speed              = u32_as_float(f32); break;
-        case 15:if (!pb_read_fixed32(&p, end, &f32)) return; out->wind_gust               = u32_as_float(f32); break;
-        case 16:if (!pb_read_fixed32(&p, end, &f32)) return; out->wind_lull               = u32_as_float(f32); break;
-        default: if (!pb_skip_value(&p, end, wt)) return; break;
+        case 1:  if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->temperature_c           = u32_as_float(f32); break;
+        case 2:  if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->relative_humidity       = u32_as_float(f32); break;
+        case 3:  if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->barometric_pressure_hpa = u32_as_float(f32); break;
+        case 4:  if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->gas_resistance          = u32_as_float(f32); break;
+        case 5:  if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->voltage_env             = u32_as_float(f32); break;
+        case 6:  if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->current                 = u32_as_float(f32); break;
+        /* field 7: iaq is uint32, not float. Was previously read as fixed32
+         * so the reported value was garbage (e.g. an air-quality index of
+         * a few hundred showed as a denormal/huge float). */
+        case 7:  if (wt != 0 || !pb_read_varint(&p, end, &v)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->iaq = (uint32_t)v; break;
+        case 8:  if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->distance_mm             = u32_as_float(f32); break;
+        case 9:  if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->lux                     = u32_as_float(f32); break;
+        case 10: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->white_lux               = u32_as_float(f32); break;
+        case 11: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->ir_lux                  = u32_as_float(f32); break;
+        case 12: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->uv_lux                  = u32_as_float(f32); break;
+        /* field 13: wind_direction is uint32, not float. */
+        case 13: if (wt != 0 || !pb_read_varint(&p, end, &v)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->wind_direction = (uint32_t)v; break;
+        case 14: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->wind_speed              = u32_as_float(f32); break;
+        /* fields 15..17 were previously shifted: we had wind_gust on
+         * field 15 (which is actually `weight`), wind_lull on field 16
+         * (which is actually wind_gust), and didn't read field 17 at all
+         * (which is wind_lull). Realign with the current proto. */
+        case 15: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->weight                  = u32_as_float(f32); break;
+        case 16: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->wind_gust               = u32_as_float(f32); break;
+        case 17: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->wind_lull               = u32_as_float(f32); break;
+        /* Newer sensor fields (radiation, rainfall, soil_*) -- surface
+         * the common ones so a Geiger or weather-station node shows up
+         * with real data instead of getting silently dropped. */
+        case 18: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->radiation_uSvh          = u32_as_float(f32); break;
+        case 19: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->rainfall_1h_mm          = u32_as_float(f32); break;
+        case 20: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->rainfall_24h_mm         = u32_as_float(f32); break;
+        case 21: if (wt != 0 || !pb_read_varint(&p, end, &v)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->soil_moisture = (uint32_t)v; break;
+        case 22: if (wt != 5 || !pb_read_fixed32(&p, end, &f32)) { if (!pb_skip_value(&p, end, wt)) return; break; }
+                 out->soil_temperature_c      = u32_as_float(f32); break;
+        default:
+            if (!pb_skip_value(&p, end, wt)) return;
+            break;
         }
     }
     out->have_environment = true;

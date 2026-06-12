@@ -93,13 +93,19 @@ typedef struct mesh_telemetry {
     float    gas_resistance;
     float    voltage_env;
     float    current;
-    float    iaq;
+    uint32_t iaq;                         /* field 7: uint32 per proto, NOT float */
     float    distance_mm;
-    float    lux, white_lux, ir_lumens, uv_lux;
-    float    wind_direction;
+    float    lux, white_lux, ir_lux, uv_lux;
+    uint32_t wind_direction;              /* field 13: uint32 per proto, NOT float */
     float    wind_speed;
-    float    wind_gust;
-    float    wind_lull;
+    float    weight;                      /* field 15 */
+    float    wind_gust;                   /* field 16 (was wired to field 15) */
+    float    wind_lull;                   /* field 17 (was wired to field 16) */
+    float    radiation_uSvh;              /* field 18 */
+    float    rainfall_1h_mm;              /* field 19 */
+    float    rainfall_24h_mm;             /* field 20 */
+    uint32_t soil_moisture;               /* field 21 */
+    float    soil_temperature_c;          /* field 22 */
 
     bool     have_power;
     float    ch1_voltage, ch1_current;

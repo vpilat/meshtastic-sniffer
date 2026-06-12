@@ -340,10 +340,28 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
                 if (t.have_environment) {
                     jw_open_array(j, "environment");
                     jw_array_sep(j); jw_putc(j, '{'); j->first_field = true;
-                    if (t.temperature_c)              jw_field_f32(j, "temp_c",    t.temperature_c);
-                    if (t.relative_humidity)          jw_field_f32(j, "humidity",  t.relative_humidity);
-                    if (t.barometric_pressure_hpa)    jw_field_f32(j, "pressure",  t.barometric_pressure_hpa);
-                    if (t.wind_speed)                 jw_field_f32(j, "wind_mps",  t.wind_speed);
+                    if (t.temperature_c)              jw_field_f32(j, "temp_c",        t.temperature_c);
+                    if (t.relative_humidity)          jw_field_f32(j, "humidity",      t.relative_humidity);
+                    if (t.barometric_pressure_hpa)    jw_field_f32(j, "pressure",      t.barometric_pressure_hpa);
+                    if (t.gas_resistance)             jw_field_f32(j, "gas_res",       t.gas_resistance);
+                    if (t.voltage_env)                jw_field_f32(j, "voltage",       t.voltage_env);
+                    if (t.current)                    jw_field_f32(j, "current",       t.current);
+                    if (t.iaq)                        jw_field_u32(j, "iaq",           t.iaq);
+                    if (t.distance_mm)                jw_field_f32(j, "distance_mm",   t.distance_mm);
+                    if (t.lux)                        jw_field_f32(j, "lux",           t.lux);
+                    if (t.white_lux)                  jw_field_f32(j, "white_lux",     t.white_lux);
+                    if (t.ir_lux)                     jw_field_f32(j, "ir_lux",        t.ir_lux);
+                    if (t.uv_lux)                     jw_field_f32(j, "uv_lux",        t.uv_lux);
+                    if (t.wind_direction)             jw_field_u32(j, "wind_dir_deg",  t.wind_direction);
+                    if (t.wind_speed)                 jw_field_f32(j, "wind_mps",      t.wind_speed);
+                    if (t.weight)                     jw_field_f32(j, "weight",        t.weight);
+                    if (t.wind_gust)                  jw_field_f32(j, "wind_gust_mps", t.wind_gust);
+                    if (t.wind_lull)                  jw_field_f32(j, "wind_lull_mps", t.wind_lull);
+                    if (t.radiation_uSvh)             jw_field_f32(j, "radiation_uSvh", t.radiation_uSvh);
+                    if (t.rainfall_1h_mm)             jw_field_f32(j, "rain_1h_mm",    t.rainfall_1h_mm);
+                    if (t.rainfall_24h_mm)            jw_field_f32(j, "rain_24h_mm",   t.rainfall_24h_mm);
+                    if (t.soil_moisture)              jw_field_u32(j, "soil_moisture", t.soil_moisture);
+                    if (t.soil_temperature_c)         jw_field_f32(j, "soil_temp_c",   t.soil_temperature_c);
                     jw_putc(j, '}');
                     jw_close_array(j);
                 }
