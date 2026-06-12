@@ -1795,20 +1795,38 @@ void web_init(int port)
 void web_publish_line(const char *json, size_t len)
 {
     if (!json || len == 0) return;
-    /* Wrap as SSE: "data: <json>\n\n" */
-    char  hdr[8] = "data: ";
+    /* Assemble "data: <json>\n" (json already ends with its own newline,
+     * so the trailing '\n' here completes the SSE event terminator) into
+     * one buffer and write it with a single send(). Splitting into three
+     * send() calls let a slow browser take the header, return EAGAIN on
+     * the body, and keep the FD open mid-frame -- the next event then
+     * appended a fresh "data: " on top of the half-written one and
+     * corrupted every subsequent message on that client. */
+    static const char HDR[] = "data: ";
+    const size_t hdrlen = sizeof(HDR) - 1;
+    const size_t total  = hdrlen + len + 1;
+
+    char  stackbuf[4096];
+    char *buf = stackbuf;
+    if (total > sizeof(stackbuf)) {
+        buf = malloc(total);
+        if (!buf) return;
+    }
+    memcpy(buf, HDR, hdrlen);
+    memcpy(buf + hdrlen, json, len);
+    buf[hdrlen + len] = '\n';
+
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < g_sse_count; ) {
         int fd = g_sse_fds[i];
-        ssize_t r1 = send(fd, hdr,  6,    MSG_NOSIGNAL | MSG_DONTWAIT);
-        ssize_t r2 = send(fd, json, len,  MSG_NOSIGNAL | MSG_DONTWAIT);
-        ssize_t r3 = send(fd, "\n", 1,    MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (r1 < 0 || r2 < 0 || r3 < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                close(fd);
-                g_sse_fds[i] = g_sse_fds[--g_sse_count];
-                continue;
-            }
+        ssize_t w = send(fd, buf, total, MSG_NOSIGNAL | MSG_DONTWAIT);
+        /* Any short write or EAGAIN means we cannot keep this client
+         * framed -- close it. A reload reconnects fresh and replays
+         * from g_history. */
+        if (w < (ssize_t)total) {
+            close(fd);
+            g_sse_fds[i] = g_sse_fds[--g_sse_count];
+            continue;
         }
         ++i;
     }
@@ -1829,6 +1847,8 @@ void web_publish_line(const char *json, size_t len)
         e->buf = NULL; e->len = 0; /* malloc fail: slot empty, ring intact */
     }
     pthread_mutex_unlock(&g_lock);
+
+    if (buf != stackbuf) free(buf);
 }
 
 void web_shutdown(void)
