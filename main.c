@@ -29,6 +29,7 @@
 #include "schema.h"
 #include "fftw_lock.h"
 #include "fftw_wisdom.h"
+#include "webhook.h"
 #include "file_src.h"
 #include "keyset.h"
 #include "lora.h"
@@ -717,6 +718,7 @@ static void on_off_grid_discovery(const scanner_discovery_t *disc, void *user)
         (unsigned long long)disc->f_hz, (double)disc->snr_db, (double)disc->bw_hz_estimate);
     if (n < 0) return;
     fwrite(line, 1, (size_t)n, stdout); fflush(stdout);
+    webhook_publish("OFF_GRID_LORA", line, (size_t)n);
     fprintf(stderr, "[scanner] off-grid LoRa-shaped energy at %.3f MHz, SNR %.1f dB\n",
             disc->f_hz / 1e6, (double)disc->snr_db);
 }
@@ -775,6 +777,7 @@ static void replay_check(const mesh_event_t *ev)
             if (n > 0) {
                 fwrite(line, 1, (size_t)n, stdout); fflush(stdout);
                 if (opt_web_port > 0) web_publish_line(line, (size_t)n);
+                webhook_publish("REPLAY_SUSPECTED", line, (size_t)n);
             }
             e->alerted = true;
         }
@@ -1323,7 +1326,7 @@ static void *stats_thread(void *arg)
              * tags the source sniffer when --station-id is set;
              * fusion's subscriber loop falls back to the registry name
              * if absent. */
-            char sline[768];
+            char sline[1024];
             int sn;
             const char *sid = opt_station_id ? opt_station_id : "";
             /* Derive a human-readable clock-discipline class from
@@ -1366,6 +1369,8 @@ static void *stats_thread(void *arg)
                     "\"focus_fell_behind\":%llu,"
                     "\"focus_fell_behind_edge\":%llu,"
                     "\"focus_fell_behind_thru\":%llu,"
+                    "\"webhook_queued\":%llu,\"webhook_sent\":%llu,"
+                    "\"webhook_dropped\":%llu,\"webhook_failed\":%llu,"
                     "\"ring_ms\":%d,\"ring_samples\":%llu}\n",
                     sid, rate_msps, (unsigned long long)f,
                     (unsigned long long)d, (unsigned long long)og,
@@ -1380,6 +1385,10 @@ static void *stats_thread(void *arg)
                     (unsigned long long)focus_fell_behind_sum,
                     (unsigned long long)focus_fell_behind_edge_sum,
                     (unsigned long long)focus_fell_behind_thru_sum,
+                    (unsigned long long)webhook_queued_total(),
+                    (unsigned long long)webhook_sent_total(),
+                    (unsigned long long)webhook_dropped_total(),
+                    (unsigned long long)webhook_failed_total(),
                     (int)g_iq_ring_ms, (unsigned long long)ring_samples);
             else
                 sn = snprintf(sline, sizeof(sline),
@@ -1394,6 +1403,8 @@ static void *stats_thread(void *arg)
                     "\"focus_fell_behind\":%llu,"
                     "\"focus_fell_behind_edge\":%llu,"
                     "\"focus_fell_behind_thru\":%llu,"
+                    "\"webhook_queued\":%llu,\"webhook_sent\":%llu,"
+                    "\"webhook_dropped\":%llu,\"webhook_failed\":%llu,"
                     "\"ring_ms\":%d,\"ring_samples\":%llu}\n",
                     sid, rate_msps, (unsigned long long)f,
                     (unsigned long long)d,
@@ -1408,6 +1419,10 @@ static void *stats_thread(void *arg)
                     (unsigned long long)focus_fell_behind_sum,
                     (unsigned long long)focus_fell_behind_edge_sum,
                     (unsigned long long)focus_fell_behind_thru_sum,
+                    (unsigned long long)webhook_queued_total(),
+                    (unsigned long long)webhook_sent_total(),
+                    (unsigned long long)webhook_dropped_total(),
+                    (unsigned long long)webhook_failed_total(),
                     (int)g_iq_ring_ms, (unsigned long long)ring_samples);
             if (sn > 0) {
                 if (opt_web_port > 0) web_publish_line(sline, (size_t)sn);
@@ -3376,6 +3391,9 @@ static int run_live(void)
         if (g_fftw_wisdom_path) fftw_wisdom_load(g_fftw_wisdom_path);
     }
 
+    /* Opt-in webhook sink. No-op when --webhook-url is unset. */
+    webhook_init(opt_webhook_url, opt_webhook_on, opt_webhook_timeout_ms);
+
     /* Channelizer + per-channel demods */
     g_channelizer = channelizer_create((uint64_t)center_freq, (uint32_t)samp_rate);
     if (!g_channelizer) { fprintf(stderr, "channelizer_create failed\n"); return 1; }
@@ -3859,6 +3877,10 @@ static int run_live(void)
         }
     }
     g_focus_pool_size = 0;
+    /* Webhook worker thread flushes in-flight POSTs against its per-
+     * request timeout and exits. Has to run before stdio shutdown so
+     * the 'webhook: ...' farewell line still makes it to stderr. */
+    webhook_stop();
     /* All FFTW plans have been destroyed at this point; the planner state
      * still in memory is what we want to persist for the next run. */
     if (g_fftw_wisdom_path) {

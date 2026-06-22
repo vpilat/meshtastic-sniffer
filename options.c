@@ -62,6 +62,9 @@ char         *opt_share_url           = NULL;
 char         *opt_iq_record           = NULL;
 char         *opt_stats_json          = NULL;
 char         *opt_fftw_wisdom         = NULL;
+char         *opt_webhook_url         = NULL;
+char         *opt_webhook_on          = NULL;
+int           opt_webhook_timeout_ms  = 1000;
 
 extra_freq_t  opt_extra_freqs[EXTRA_FREQ_MAX];
 int           opt_extra_freq_count    = 0;
@@ -236,6 +239,13 @@ void options_print_help(const char *prog)
         "                         the FFTW_MEASURE benchmark (off by default). Without\n"
         "                         PATH uses $XDG_CACHE_HOME/meshtastic-sniffer/fftw.wisdom\n"
         "                         or $HOME/.cache/meshtastic-sniffer/fftw.wisdom.\n"
+        "  --webhook-url=URL      POST JSON event lines to URL on a background thread.\n"
+        "                         Non-blocking; bounded queue; never stalls decode.\n"
+        "                         Default allowlist: PSK_DISCOVERED, OFF_GRID_LORA,\n"
+        "                         GEOFENCE_ENTRY, GEOFENCE_EXIT. Override via --webhook-on.\n"
+        "  --webhook-on=A,B,C     comma-separated event allowlist for --webhook-url.\n"
+        "                         Event names match the 'event' field in the JSON.\n"
+        "  --webhook-timeout-ms=N per-POST timeout (clamped 100..30000, default 1000).\n"
         "\n"
         "Outputs (any combination):\n"
         "  --feed=HOST:PORT       JSON UDP feed (repeatable, max %d)\n"
@@ -361,6 +371,7 @@ int options_parse(int argc, char **argv)
         O_CENTER, O_RATE, O_GAIN, O_BIAS, O_PPM, O_CLOCK,
         O_REGION, O_PRESETS, O_KEYS, O_KEYS_FILE, O_SHARE_URL, O_EXTRA_FREQ,
         O_IQ_RECORD, O_STATS_JSON, O_FFTW_WISDOM,
+        O_WEBHOOK_URL, O_WEBHOOK_ON, O_WEBHOOK_TIMEOUT_MS,
         O_FEED, O_MQTT, O_MQTT_TOPIC, O_ZMQ, O_COT, O_WEB, O_STATION, O_GPSD, O_API_TOKEN,
         O_PCAP, O_PCAP_FIFO, O_PSK_WORDLIST, O_ARCHIVE, O_GEOFENCE, O_ANNOUNCE_TO, O_C2_DEALER,
         O_ZMQ_CURVE_SECRET, O_ZMQ_CURVE_KEYGEN, O_STATION_T_ACC_NS,
@@ -406,6 +417,9 @@ int options_parse(int argc, char **argv)
         { "iq-record",  required_argument, NULL, O_IQ_RECORD },
         { "stats-json", required_argument, NULL, O_STATS_JSON },
         { "fftw-wisdom", optional_argument, NULL, O_FFTW_WISDOM },
+        { "webhook-url",        required_argument, NULL, O_WEBHOOK_URL },
+        { "webhook-on",         required_argument, NULL, O_WEBHOOK_ON },
+        { "webhook-timeout-ms", required_argument, NULL, O_WEBHOOK_TIMEOUT_MS },
         { "extra-freq", required_argument, NULL, O_EXTRA_FREQ },
         { "feed",       required_argument, NULL, O_FEED },
         { "mqtt",       required_argument, NULL, O_MQTT },
@@ -558,6 +572,9 @@ int options_parse(int argc, char **argv)
             /* Empty string means "use the default cache path". */
             opt_fftw_wisdom = strdup(optarg ? optarg : "");
             break;
+        case O_WEBHOOK_URL:        opt_webhook_url = strdup(optarg); break;
+        case O_WEBHOOK_ON:         opt_webhook_on  = strdup(optarg); break;
+        case O_WEBHOOK_TIMEOUT_MS: opt_webhook_timeout_ms = atoi(optarg); break;
         case O_EXTRA_FREQ:
             if (parse_extra_freq(optarg) < 0) {
                 fprintf(stderr, "bad --extra-freq=%s (need HZ:bw=BW:sf=SF:cr=CR)\n", optarg);

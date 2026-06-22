@@ -104,6 +104,12 @@ extern char         *opt_stats_json;      /* path to dump 5s per-channel stats J
  * default XDG cache path. Non-empty = use the explicit path. */
 extern char         *opt_fftw_wisdom;
 
+/* Webhook sink. NULL url = disabled. event_csv NULL/empty uses the
+ * default allowlist (PSK_DISCOVERED, OFF_GRID_LORA, GEOFENCE_*). */
+extern char         *opt_webhook_url;
+extern char         *opt_webhook_on;
+extern int           opt_webhook_timeout_ms;
+
 /* Extra user-supplied off-grid slots (e.g. promoted from scan). */
 #define EXTRA_FREQ_MAX 32
 typedef struct {

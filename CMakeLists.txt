@@ -121,6 +121,7 @@ set(SOURCES
     ${PROJECT_SOURCE_DIR}/iq_ring.c
     ${PROJECT_SOURCE_DIR}/iq_snapshot.c
     ${PROJECT_SOURCE_DIR}/fftw_wisdom.c
+    ${PROJECT_SOURCE_DIR}/webhook.c
     ${PROJECT_SOURCE_DIR}/focused.c
     ${PROJECT_SOURCE_DIR}/pfb.c
     ${PROJECT_SOURCE_DIR}/lora.c
@@ -252,6 +253,13 @@ if(ZMQ_FOUND)
 else()
     message(STATUS "ZMQ: not found (zmq_pub.c stubs out; --zmq will be a no-op)")
 endif()
+
+# Webhook sink (--webhook-url=...). Uses libcurl for HTTP/HTTPS POST.
+# libcurl is standard on every distro we target and the existing
+# package landscape (apt install libcurl4-gnutls-dev or -openssl-dev).
+find_package(CURL REQUIRED)
+target_link_libraries(meshtastic-sniffer PRIVATE CURL::libcurl)
+message(STATUS "CURL: enabled for webhooks (${CURL_VERSION_STRING})")
 
 set_property(TARGET meshtastic-sniffer PROPERTY C_STANDARD 99)
 set_property(TARGET meshtastic-sniffer PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)

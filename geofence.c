@@ -23,6 +23,7 @@
 #include <string.h>
 
 extern void web_publish_line(const char *json, size_t len);
+extern void webhook_publish(const char *event_name, const char *json, size_t len);
 
 #define GEO_MAX_POLYGONS    32
 #define GEO_MAX_VERTICES    256
@@ -174,6 +175,7 @@ void geofence_check(uint32_t node_id, double lat, double lon)
         if (n > 0) {
             fwrite(line, 1, (size_t)n, stdout); fflush(stdout);
             web_publish_line(line, (size_t)n);
+            webhook_publish(event, line, (size_t)n);
             if (was_in)
                 fprintf(stderr, "[geofence] !%08x EXITED %s\n", node_id, g_polys[i].name);
             else

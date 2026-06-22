@@ -35,6 +35,7 @@
 /* Forwards from main.c / web.c so we can publish the discovery event. */
 extern keyset_t *app_get_keyset(void);
 extern void      web_publish_line(const char *json, size_t len);
+extern void      webhook_publish(const char *event_name, const char *json, size_t len);
 
 #define PSK_QUEUE_SIZE       128
 #define PSK_FRAME_MAX_BYTES  256
@@ -183,6 +184,7 @@ static void emit_discovery(uint8_t channel_hash, const candidate_t *c,
     if (n <= 0) return;
     fwrite(line, 1, (size_t)n, stdout); fflush(stdout);
     web_publish_line(line, (size_t)n);
+    webhook_publish("PSK_DISCOVERED", line, (size_t)n);
     fprintf(stderr, "[psk-dict] discovered key for channel 0x%02x via '%s' "
                     "(channel_name=%s)\n",
             channel_hash, c->spec ? c->spec : "?",
