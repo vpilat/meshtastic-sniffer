@@ -207,9 +207,21 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
     jw_field_bool(j, "fields_trusted", fields_trusted);
     if (ev->cfo_hz > 100.0f || ev->cfo_hz < -100.0f)
         jw_field_f32(j, "cfo_hz", ev->cfo_hz);
-    /* Multilateration timestamp + accuracy class. Only emit when we
-     * have a station name to attribute observations to (mlat is a
-     * multi-station correlation; an unnamed sensor can't participate). */
+    /* Software-lock TOA timestamp (CLOCK_REALTIME stamped at the
+     * moment preamble lock was detected). Strictly earlier in the
+     * pipeline than ev->ts (which is stamped after demod completes),
+     * which is exactly what a local consumer that wants the chirp's
+     * START time needs -- the dashboard's Spectrum overlay uses it
+     * to anchor packet boxes to the row their preamble landed on
+     * instead of the row decode finished. Emitted whenever populated;
+     * mlat-only consumers still get a wall-clock to work with even
+     * if --station-id is not set. */
+    if (ev->preamble_lock_t_ns) {
+        jw_field_u64(j, "preamble_lock_t_ns", ev->preamble_lock_t_ns);
+    }
+    /* Multilateration fields. Only emit when we have a station name
+     * to attribute observations to (mlat is a multi-station
+     * correlation; an unnamed sensor can't participate). */
     if (ev->station_t_ns && opt_station_id) {
         jw_field_u64(j, "station_t_ns",     ev->station_t_ns);
         jw_field_u32(j, "station_t_acc_ns", ev->station_t_acc_ns);
@@ -236,16 +248,6 @@ static void serialize_event(jw_t *j, const mesh_event_t *ev)
         }
         if (ev->sample_rate_sps) {
             jw_field_u64(j, "sample_rate_sps", ev->sample_rate_sps);
-        }
-        /* Software-lock TOA timestamp (CLOCK_REALTIME stamped at the
-         * moment preamble lock was detected). Strictly earlier in the
-         * pipeline than station_t_ns (which the dedup ring stamps
-         * after frame demod completes). Fusion uses this as a
-         * timestamp_class=software_lock source when present; it is
-         * not a sample-derived GPSDO-grade TOA. */
-        if (ev->preamble_lock_t_ns) {
-            jw_field_u64(j, "preamble_lock_t_ns",
-                         ev->preamble_lock_t_ns);
         }
     }
 
