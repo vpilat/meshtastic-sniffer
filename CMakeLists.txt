@@ -348,6 +348,22 @@ add_executable(test_mesh_decoders
 target_link_libraries(test_mesh_decoders PRIVATE m)
 set_property(TARGET test_mesh_decoders PROPERTY C_STANDARD 99)
 
+# test_mesh_packet_decode: wire-format tests for mesh_packet_decode --
+# header parsing, AES-128/256 round-trip + a golden fixed-ciphertext
+# vector, Data envelope extras (want_response/request_id/reply_id),
+# flags packing, wrong-PSK + unknown-hash error paths, mesh_packet_
+# decode_with_radio preset_name resolution, and unknown/malformed
+# Data envelopes after successful decrypt.
+add_executable(test_mesh_packet_decode
+    ${PROJECT_SOURCE_DIR}/tests/test_mesh_packet_decode.c
+    ${PROJECT_SOURCE_DIR}/mesh_packet.c
+    ${PROJECT_SOURCE_DIR}/keyset.c
+    ${PROJECT_SOURCE_DIR}/meshtastic.c
+    ${PROJECT_SOURCE_DIR}/protobuf.c
+    ${PROJECT_SOURCE_DIR}/recover/stubs.c)
+target_link_libraries(test_mesh_packet_decode PRIVATE OpenSSL::Crypto Threads::Threads m)
+set_property(TARGET test_mesh_packet_decode PROPERTY C_STANDARD 99)
+
 # focused_demo: scan-then-focus Phase 2 prototype. One shared file reader
 # streams cs8 IQ into N independent focused-decode workers, each with its
 # own DDC chain (mixer + LPF + decim) and lora_decoder_t. Bypasses the

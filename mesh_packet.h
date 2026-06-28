@@ -105,7 +105,7 @@ typedef struct mesh_event {
     size_t         payload_len;
     uint32_t       request_id;         /* protobuf field 6 (or 0) */
     uint32_t       reply_id;           /* protobuf field 7 (or 0) */
-    bool           want_response;      /* protobuf field 4 */
+    bool           want_response;      /* protobuf field 3 */
 
     /* Optional: extracted typed fields per port. */
     /* TEXT_MESSAGE_APP: payload is UTF-8 text directly. */
