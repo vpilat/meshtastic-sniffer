@@ -141,6 +141,7 @@ set(SOURCES
     ${PROJECT_SOURCE_DIR}/schema.c
     ${PROJECT_SOURCE_DIR}/scanner.c
     ${PROJECT_SOURCE_DIR}/web.c
+    ${PROJECT_SOURCE_DIR}/share_url.c
     ${PROJECT_SOURCE_DIR}/cot.c
     ${PROJECT_SOURCE_DIR}/node_db.c
     ${PROJECT_SOURCE_DIR}/sigmf.c
@@ -363,6 +364,21 @@ add_executable(test_mesh_packet_decode
     ${PROJECT_SOURCE_DIR}/recover/stubs.c)
 target_link_libraries(test_mesh_packet_decode PRIVATE OpenSSL::Crypto Threads::Threads m)
 set_property(TARGET test_mesh_packet_decode PROPERTY C_STANDARD 99)
+
+# test_share_url: regression coverage for the meshtastic.org/e/
+# channel-share URL parser (web.c decode_channel_share). Reproduces
+# the "imports 0 channels" bug from issue #11 with a synthetic
+# 4-channel ChannelSet where field 1 is repeated ChannelSettings
+# directly (no Channel wrapper -- that's the actual on-air proto).
+# Only extracts the decoder + its keyset + protobuf dependencies;
+# does not need OpenSSL or the full sniffer link.
+add_executable(test_share_url
+    ${PROJECT_SOURCE_DIR}/tests/test_share_url.c
+    ${PROJECT_SOURCE_DIR}/share_url.c
+    ${PROJECT_SOURCE_DIR}/keyset.c
+    ${PROJECT_SOURCE_DIR}/meshtastic.c)
+target_link_libraries(test_share_url PRIVATE Threads::Threads m)
+set_property(TARGET test_share_url PROPERTY C_STANDARD 99)
 
 # focused_demo: scan-then-focus Phase 2 prototype. One shared file reader
 # streams cs8 IQ into N independent focused-decode workers, each with its
