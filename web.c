@@ -2049,11 +2049,6 @@ static size_t url_decode_inplace(char *s)
     return (size_t)(w - s);
 }
 
-/* Public wrapper so main.c can use decode_channel_share() directly. */
-int web_decode_share_url(keyset_t *ks, const char *url)
-{
-    return decode_channel_share(ks, url);
-}
 
 static void promote_to_sse(int fd) {
     const char *hdr =
